@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 from datetime import datetime, timedelta
 from azure.storage.blob import BlobServiceClient, BlobClient, ContentSettings, UserDelegationKey, generate_blob_sas, BlobSasPermissions
 from azure.identity import DefaultAzureCredential
+from azure.core.credentials import AzureKeyCredential
 from azure.core.exceptions import ResourceNotFoundError, ClientAuthenticationError
 
 logger = logging.getLogger(__name__)
@@ -55,7 +56,11 @@ class BlobService:
             account_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
 
             # Create BLOB Service client with DefaultAzureCredential
-            credential = DefaultAzureCredential()
+            if not os.getenv("STORAGE_ACCESS_KEY"):
+                credential = DefaultAzureCredential()
+            else:
+                credential = AzureKeyCredential(os.getenv("STORAGE_ACCESS_KEY"))
+            
             blob_service_client = BlobServiceClient(
                 account_url=account_url,
                 credential=credential
