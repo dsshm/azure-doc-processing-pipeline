@@ -58,14 +58,18 @@ class BlobService:
             # Create BLOB Service client with DefaultAzureCredential
             if not os.getenv("STORAGE_ACCESS_KEY"):
                 credential = DefaultAzureCredential()
+
+                blob_service_client = BlobServiceClient(
+                    account_url=account_url,
+                    credential=credential
+                )
+
             else:
-                credential = AzureKeyCredential(os.getenv("STORAGE_ACCESS_KEY"))
-            
-            blob_service_client = BlobServiceClient(
-                account_url=account_url,
-                credential=credential
-            )
-            
+
+                blob_service_client = BlobServiceClient.from_connection_string(
+                    conn_str=os.getenv("STORAGE_ACCESS_KEY")
+                )
+
             # Get blob client and download
             blob_client = blob_service_client.get_blob_client(
                 container=container_name,
