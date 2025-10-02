@@ -16,3 +16,6 @@ azure-ai-documentintelligence
 
 # Azure Translation
 #azure-ai-translation-text 
+
+pydantic
+openai
