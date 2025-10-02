@@ -13,6 +13,7 @@
     "AZURE_OPENAI_KEY": "<your-openai-key>",
     "AZURE_OPENAI_API_VERSION": "2024-12-01-preview",
     "AZURE_OPENAI_MODEL_NAME": "gpt-4o",
+    "AZURE_OPENAI_EMBEDDING_MODEL": "text-embedding-ada-002",
 
     "AZURE_AI_VISION_ENDPOINT": "https://<your-vision-resource>.cognitiveservices.azure.com/",
     "AZURE_AI_VISION_KEY": "<your-vision-key>",

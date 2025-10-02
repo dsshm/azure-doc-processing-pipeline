@@ -34,6 +34,23 @@ The function reads configuration from environment variables. For local developme
 
 Note: Do not commit secrets or `local.settings.json` to source control. Prefer storing keys and secrets in Azure Key Vault and referencing them from Function App configuration (or grant the Function App a Managed Identity and assign appropriate RBAC roles).
 
+### LLM / Azure OpenAI configuration
+
+The project uses Azure OpenAI (via the Azure Cognitive Services endpoint) for chat/completions and embedding generation. The following additional environment variables are used by the LLM components and should be set locally (in `local.settings.json`) or in your Function App configuration.
+
+| Variable | Required | Description | Example |
+|---|---:|---|---|
+| AZURE_OPENAI_ENDPOINT | Yes | The Azure OpenAI or Cognitive Services endpoint used for LLM calls | https://my-openai-resource.cognitiveservices.azure.com/ |
+| AZURE_OPENAI_KEY | Yes (unless using Managed Identity) | API key for Azure OpenAI or empty when using Managed Identity / DefaultAzureCredential | <your-openai-key> |
+| AZURE_OPENAI_API_VERSION | Recommended | API version used by the Azure OpenAI SDK calls | 2024-12-01-preview |
+| AZURE_OPENAI_MODEL_NAME | Recommended | Model or deployment name used for chat/completions | gpt-4o |
+| AZURE_OPENAI_EMBEDDING_MODEL | Optional | Embedding model name used for vector embeddings | text-embedding-ada-002 |
+
+Notes:
+- If you rely on Managed Identity / DefaultAzureCredential, you may leave the key values empty and ensure the Function App identity has access to the Cognitive Services resource.
+- The code expects `AZURE_OPENAI_EMBEDDING_MODEL` when calling embedding creation. If omitted, embedding calls may fail.
+- The `AZURE_OPENAI_MODEL_NAME` should match the model or deployment name configured in your Azure resource (e.g., a deployment named `gpt-4o`).
+
 ## Authentication requirements
 This project uses the Azure SDKs which support two main authentication options:
 
