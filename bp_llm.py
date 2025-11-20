@@ -385,7 +385,8 @@ async def describe_document(req: func.HttpRequest) -> func.HttpResponse:
     # Consolidate page analysis
     consolidated_results = llmops.consolidate_page_analyses(page_summaries)
 
-
+    # Generate overall summary for the documemt
+    
 
     # Generate Description
     #results = llmops.generate_general_description(text=body)
