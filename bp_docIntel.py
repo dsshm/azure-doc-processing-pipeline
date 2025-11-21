@@ -14,7 +14,7 @@ from services import BlobService
 from azure.identity import DefaultAzureCredential
 from azure.core.credentials import AzureKeyCredential
 from azure.ai.documentintelligence import DocumentIntelligenceClient
-from azure.ai.documentintelligence.models import DocumentAnalysisFeature, AnalyzeResult
+from azure.ai.documentintelligence.models import DocumentAnalysisFeature, AnalyzeResult, AnalyzeOutputOption 
 
 docintel = func.Blueprint()
 
@@ -42,7 +42,8 @@ class AzDocIntel:
     poller = self.client.begin_analyze_document(
       model_id=model_id,
       body=document_data,
-      output_content_format="markdown",
+      #output_content_format="markdown",
+      #output=[AnalyzeOutputOption.PARAGRAPHS],
       features=[
         DocumentAnalysisFeature.BARCODES
       ]
@@ -53,16 +54,47 @@ class AzDocIntel:
     # Page mapping
     pages = []
     barcodes = []
+
     for page in results.pages:
+      page_number = page.page_number
+      page_content = ""
+
+      # METHOD 1: Extract using spans (if available)
+      if page.spans and results.content:
+        try:
+          page_content_parts = []
+          for span in page.spans:
+            start = span.offset
+            end = start + span.length
+            page_content_parts.append(results.content[start:end])
+          page_content = "".join(page_content_parts)
+        except Exception as e:
+          page_content = ""
+
+      # METHOD 2: Extract using lines (fallback)
+      if not page_content and page.lines:
+        try:
+          page_content = "\n".join(line.content for line in page.lines)
+        except Exception as e:
+          page_content = ""
+
+      # METHOD 3: Extract using words (last resort)
+      if not page_content and page.words:
+        try:
+          page_content = " ".join(word.content for word in page.words)
+        except Exception as e:
+          page_content = ""
+
       pages.append({
-        "page_number": page.page_number,
+        "page_number": page_number,
         "width": page.width,
         "height": page.height,
+        "content": page_content,
       })
 
       for bc in (getattr(page, "barcodes", None) or []):
         barcodes.append({
-          "page_number": page.page_number,
+          "page_number": page_number,
           "kind": bc.kind,
           "value": bc.value,
           "polygon": bc.polygon,
@@ -95,7 +127,7 @@ class AzDocIntel:
       "content": results.content or "",
       "pages": pages,
       "tables": tables,
-      "barcodes": barcodes
+      "barcodes": barcodes,
     }
 
     return returnResults
