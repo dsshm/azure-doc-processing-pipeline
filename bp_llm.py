@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 import azure.functions as func
 
-from services import BlobService
+from services import BlobService, DocumentSummarizer
 
 bp_llm = func.Blueprint()
 
@@ -89,6 +89,10 @@ class LLMOperations:
       api_key=self.openai_api_key,
       api_version=self.openai_version,
     )
+
+    # Init Document Summarizer
+    self.summarizer = DocumentSummarizer(self.client, self.model_name)
+
   def analyze_page(self, page_content: str, page_number: int, total_pages: int) -> Dict[str, Any]:
       """
       Analyze a single page using LLM with existing GeneralDescription format.
@@ -235,7 +239,11 @@ class LLMOperations:
       avg_confidence = sum(confidence_scores) / len(confidence_scores) if confidence_scores else 0.0
       
       # Create consolidated description
-      consolidated_description = " ".join(all_descriptions) if all_descriptions else "Document analysis completed."
+      #consolidated_description = " ".join(all_descriptions) if all_descriptions else "Document analysis completed."
+
+      # Use DocumentSummarizer to create intelligent document summary
+      logging.info(f"Reducing {len(page_results)} page summaries to document-level summary")
+      consolidated_description = self.summarizer.reduce_to_document_summary(page_results, len(page_results))
       
       # Build final result
       consolidated = {
@@ -270,49 +278,6 @@ class LLMOperations:
       consolidated["page_summaries"] = page_summaries_list
       return consolidated
 
-  def generate_general_description(self, text: str):
-    prompt = f"""
-    You are an expert document analyst. Given the following text, provide a concise general description of its content, identify relevant categories, and extract named entities.
-
-    Text:
-    \"\"\"{text}\"\"\"
-
-    Instructions:
-    1. Provide a brief general description of the document content.
-    2. Identify relevant categories from the following list: {Categories}. For each category, provide supporting evidence from the text.
-    3. Extract named entities such as {EntityTypes}. For each entity, provide supporting evidence from the text.
-    4. If the source language is not English, provide a translation to English.
-
-    """
-
-    response = self.client.chat.completions.create(
-      model=self.model_name,
-      messages=[
-        {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user", "content": prompt}
-      ],
-      response_format={
-        "type": "json_schema",
-        "json_schema":{
-          "name": "GeneralDescription",
-          "schema": GeneralDescription.model_json_schema()
-        }
-      },
-      temperature=0.2,
-      max_tokens=1000,
-      n=1,
-      stop=None,
-    )
-
-    try:
-      content = response.choices[0].message.content
-      data = json.loads(content)
-      print( data )
-      return data
-    except (json.JSONDecodeError, KeyError) as e:
-      logging.error(f"Error parsing LLM response: {e}")
-      raise ValueError("Failed to parse LLM response") from e
-    
   def generate_embedding(self, text):
 
     text_str = str(text).strip()
@@ -336,6 +301,17 @@ async def describe_document(req: func.HttpRequest) -> func.HttpResponse:
     llmops = LLMOperations()
     pages = body.get("pages", [])
 
+  # Support both direct pages and nested analysis.pages (from Document Intelligence)
+    if "analysis" in body:
+        analysis_data = body["analysis"]
+        pages = analysis_data.get("pages", [])
+        fallback_content = analysis_data.get("content", "")
+        logging.info("Processing Document Intelligence output format")
+    else:
+        pages = body.get("pages", [])
+        fallback_content = body.get("content", "")
+        logging.info("Processing direct pages format")
+
     # Validate pages is a list
     if not isinstance(pages, list):
         return func.HttpResponse(
@@ -343,6 +319,14 @@ async def describe_document(req: func.HttpRequest) -> func.HttpResponse:
             status_code=400,
             mimetype="application/json"
         )
+    
+    # Fallback to using entire content if no pages provided
+    if not pages and fallback_content:
+        logging.info("No pages found, creating single page from content")
+        pages = [{
+            "page_number": 1,
+            "content": fallback_content
+        }]    
 
     # IF no pages are found fallback to useing entire content.
     if not pages:
@@ -386,7 +370,7 @@ async def describe_document(req: func.HttpRequest) -> func.HttpResponse:
     consolidated_results = llmops.consolidate_page_analyses(page_summaries)
 
     # Generate overall summary for the documemt
-    
+
 
     # Generate Description
     #results = llmops.generate_general_description(text=body)
