@@ -235,6 +235,8 @@ UseDevelopmentStorage=true
 *.tfstate.*
 .terraform/
 .terraform.lock.hcl
+terraform.tfvars
+tfplan
 
 # Docker
 .dockerignore

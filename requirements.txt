@@ -1,22 +1,26 @@
-# DO NOT include azure-functions-worker in this file
-# The Python Worker is managed by Azure Functions platform
-# Manually managing azure-functions-worker may cause unexpected issues
+# --- Web framework ---
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.30,<1.0
+pydantic-settings>=2.4,<3.0
 
-azure-functions
-azure-identity
+# --- Azure Identity (managed identity / DefaultAzureCredential) ---
+azure-identity>=1.17,<2.0
 
-# Azure Storage BLOB/ADLS
-azure-storage-blob
+# --- Azure Storage ---
+azure-storage-blob>=12.22,<13.0
 
-# Azure Document Intelligence
-azure-ai-documentintelligence
+# --- Azure Document Intelligence ---
+azure-ai-documentintelligence>=1.0,<2.0
 
-# Azure AI Vision
-#azure-ai-vision-imageanalysis
+# --- Azure Cosmos DB ---
+azure-cosmos>=4.7,<5.0
 
-# Azure Translation
-#azure-ai-translation-text 
+# --- Azure OpenAI ---
+openai>=1.40,<1.76
 
-pydantic
-openai
-tiktoken
+# --- Semantic Kernel ---
+semantic-kernel>=1.10,<2.0
+
+# --- Utilities ---
+pydantic>=2.8,<3.0
+tiktoken>=0.7,<1.0

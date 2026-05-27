@@ -41,8 +41,8 @@ class CategoryEvidence(BaseModel):
 # Evidence for entities
 class EntityEvidence(BaseModel):
   quote: str = Field(..., description="The quoted text from the input that supports the entity.")
-  start_char: int = Field(..., description="The starting character index of the quoted text.")
-  end_char: int = Field(..., description="The ending character index of the quoted text.")
+  start_char: Optional[int] = Field(None, description="The starting character index of the quoted text.")
+  end_char: Optional[int] = Field(None, description="The ending character index of the quoted text.")
 
 # Entity Item
 class EntityItem(BaseModel):

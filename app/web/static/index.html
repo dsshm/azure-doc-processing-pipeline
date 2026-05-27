@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Document Processing Dashboard</title>
+<style>
+  :root{--bg:#f5f6fa;--card:#fff;--border:#e0e3eb;--primary:#0078d4;--danger:#d13438;--success:#107c10;--warn:#ffb900;--muted:#8a8886;--text:#323130}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--text);line-height:1.5}
+  header{background:var(--primary);color:#fff;padding:1rem 2rem;display:flex;align-items:center;gap:1rem}
+  header h1{font-size:1.25rem;font-weight:600}
+  .stats{display:flex;gap:.5rem;margin-left:auto;font-size:.85rem}
+  .stats span{background:rgba(255,255,255,.2);padding:.25rem .6rem;border-radius:4px}
+  main{max-width:1200px;margin:1.5rem auto;padding:0 1rem}
+
+  /* Filters */
+  .filters{display:flex;gap:.5rem;margin-bottom:1rem;flex-wrap:wrap}
+  .filters button{border:1px solid var(--border);background:var(--card);padding:.4rem .8rem;border-radius:4px;cursor:pointer;font-size:.85rem}
+  .filters button.active{background:var(--primary);color:#fff;border-color:var(--primary)}
+
+  /* Table */
+  table{width:100%;border-collapse:collapse;background:var(--card);border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+  th,td{text-align:left;padding:.6rem .8rem;border-bottom:1px solid var(--border);font-size:.875rem}
+  th{background:#fafbfc;font-weight:600;color:var(--muted);text-transform:uppercase;font-size:.75rem;letter-spacing:.03em}
+  tr:hover td{background:#f3f5f9}
+  tr{cursor:pointer}
+
+  /* Status badges */
+  .badge{display:inline-block;padding:.15rem .5rem;border-radius:3px;font-size:.75rem;font-weight:600;text-transform:capitalize}
+  .badge-queued{background:#e8f0fe;color:var(--primary)}
+  .badge-processing{background:#fff4ce;color:#6d5700}
+  .badge-completed{background:#dff6dd;color:var(--success)}
+  .badge-failed{background:#fde7e9;color:var(--danger)}
+
+  /* Detail panel */
+  #detail{display:none;background:var(--card);border-radius:8px;padding:1.5rem;margin-bottom:1.5rem;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+  #detail h2{font-size:1.1rem;margin-bottom:.75rem;display:flex;align-items:center;gap:.5rem}
+  #detail .close{margin-left:auto;cursor:pointer;border:none;background:none;font-size:1.2rem;color:var(--muted)}
+  .steps{display:flex;gap:.5rem;flex-wrap:wrap;margin:.75rem 0}
+  .step{padding:.3rem .6rem;border-radius:4px;font-size:.8rem;border:1px solid var(--border)}
+  .step-completed{border-color:var(--success);color:var(--success)}
+  .step-running{border-color:var(--warn);color:#6d5700;animation:pulse 1.5s infinite}
+  .step-failed{border-color:var(--danger);color:var(--danger)}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+  .error-box{background:#fde7e9;border-left:3px solid var(--danger);padding:.75rem;margin-top:.75rem;font-size:.85rem;white-space:pre-wrap;border-radius:0 4px 4px 0}
+  .retry-btn,.delete-btn{margin-top:.75rem;color:#fff;border:none;padding:.4rem 1rem;border-radius:4px;cursor:pointer;font-size:.85rem}
+  .retry-btn{background:var(--primary)}
+  .delete-btn{background:var(--danger);margin-left:.5rem}
+  .retry-btn:hover,.delete-btn:hover{opacity:.85}
+  .meta{font-size:.8rem;color:var(--muted);margin-top:.5rem}
+
+  .empty{text-align:center;padding:3rem;color:var(--muted)}
+  .refresh-note{font-size:.75rem;color:var(--muted);margin-top:.5rem;text-align:right}
+</style>
+</head>
+<body>
+<header>
+  <h1>📄 Document Processing Dashboard</h1>
+  <div class="stats">
+    <span id="stat-queue">Queue: 0</span>
+    <span id="stat-active">Active: 0</span>
+    <span id="stat-total">Total: 0</span>
+  </div>
+</header>
+<main>
+  <div id="detail">
+    <h2><span id="detail-title"></span><button class="close" onclick="closeDetail()">✕</button></h2>
+    <div id="detail-status"></div>
+    <div class="steps" id="detail-steps"></div>
+    <div id="detail-error"></div>
+    <div id="detail-retry"></div>
+    <div id="detail-actions" style="display:flex;gap:.5rem;flex-wrap:wrap"></div>
+    <div class="meta" id="detail-meta"></div>
+  </div>
+
+  <div class="filters" id="filters">
+    <button class="active" data-filter="">All</button>
+    <button data-filter="queued">Queued</button>
+    <button data-filter="processing">Processing</button>
+    <button data-filter="completed">Completed</button>
+    <button data-filter="failed">Failed</button>
+  </div>
+
+  <table>
+    <thead>
+      <tr><th>File</th><th>Status</th><th>Created</th><th>Updated</th><th>Error</th></tr>
+    </thead>
+    <tbody id="job-list"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
+  </table>
+  <div class="refresh-note">Auto-refreshes every 30 seconds</div>
+</main>
+
+<script>
+const API = '';
+let currentFilter = '';
+let refreshTimer = null;
+
+// --- Filters ---
+document.getElementById('filters').addEventListener('click', e => {
+  if (e.target.tagName !== 'BUTTON') return;
+  document.querySelectorAll('.filters button').forEach(b => b.classList.remove('active'));
+  e.target.classList.add('active');
+  currentFilter = e.target.dataset.filter;
+  loadJobs();
+});
+
+// --- Load jobs ---
+async function loadJobs() {
+  try {
+    const url = currentFilter
+      ? `${API}/api/status?status=${currentFilter}&limit=100`
+      : `${API}/api/status?limit=100`;
+    const res = await fetch(url);
+    const data = await res.json();
+
+    document.getElementById('stat-queue').textContent = `Queue: ${data.queue_depth ?? 0}`;
+    document.getElementById('stat-active').textContent = `Active: ${data.active_jobs ?? 0}`;
+    document.getElementById('stat-total').textContent = `Total: ${data.count ?? 0}`;
+
+    const tbody = document.getElementById('job-list');
+    if (!data.jobs || data.jobs.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" class="empty">No jobs found</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = data.jobs.map(j => `
+      <tr onclick="showDetail('${j.id}')">
+        <td>${esc(j.file_name)}</td>
+        <td><span class="badge badge-${j.status}">${j.status}</span></td>
+        <td>${fmtDate(j.created_at)}</td>
+        <td>${fmtDate(j.updated_at)}</td>
+        <td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(j.error_message || '')}</td>
+      </tr>`).join('');
+  } catch (err) {
+    console.error('Failed to load jobs', err);
+  }
+}
+
+// --- Detail ---
+async function showDetail(jobId) {
+  try {
+    const res = await fetch(`${API}/api/status/${jobId}`);
+    const j = await res.json();
+
+    document.getElementById('detail').style.display = 'block';
+    document.getElementById('detail-title').textContent = j.file_name;
+    document.getElementById('detail-status').innerHTML = `<span class="badge badge-${j.status}">${j.status}</span>`;
+
+    const stepsHtml = (j.steps || []).map(s => {
+      let cls = '';
+      if (s.status === 'completed') cls = 'step-completed';
+      else if (s.status === 'running') cls = 'step-running';
+      else if (s.status === 'failed') cls = 'step-failed';
+      return `<span class="step ${cls}">${s.name.replace(/_/g,' ')} — ${s.status}</span>`;
+    }).join('');
+    document.getElementById('detail-steps').innerHTML = stepsHtml;
+
+    if (j.error_message) {
+      document.getElementById('detail-error').innerHTML = `<div class="error-box">${esc(j.error_message)}</div>`;
+    } else {
+      document.getElementById('detail-error').innerHTML = '';
+    }
+
+    if (j.status === 'failed') {
+      document.getElementById('detail-retry').innerHTML = `<button class="retry-btn" onclick="retryJob('${j.id}')">Retry</button>`;
+    } else {
+      document.getElementById('detail-retry').innerHTML = '';
+    }
+
+    // Delete button (available for all non-processing jobs)
+    if (j.status !== 'processing') {
+      document.getElementById('detail-actions').innerHTML = `<button class="delete-btn" onclick="deleteJob('${j.id}')">Delete</button>`;
+    } else {
+      document.getElementById('detail-actions').innerHTML = '';
+    }
+
+    document.getElementById('detail-meta').textContent =
+      `ID: ${j.id}  |  Created: ${fmtDate(j.created_at)}  |  Updated: ${fmtDate(j.updated_at)}`;
+  } catch (err) {
+    console.error('Failed to load detail', err);
+  }
+}
+
+function closeDetail() {
+  document.getElementById('detail').style.display = 'none';
+}
+
+async function retryJob(jobId) {
+  try {
+    await fetch(`${API}/api/status/${jobId}/retry`, { method: 'POST' });
+    closeDetail();
+    loadJobs();
+  } catch (err) {
+    console.error('Retry failed', err);
+  }
+}
+
+async function deleteJob(jobId) {
+  if (!confirm('Delete this job and its results? This cannot be undone.')) return;
+  try {
+    const res = await fetch(`${API}/api/status/${jobId}`, { method: 'DELETE' });
+    if (!res.ok) {
+      const data = await res.json();
+      alert(data.detail || 'Delete failed');
+      return;
+    }
+    closeDetail();
+    loadJobs();
+  } catch (err) {
+    console.error('Delete failed', err);
+  }
+}
+
+// --- Helpers ---
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+function fmtDate(s) {
+  if (!s) return '';
+  try { return new Date(s).toLocaleString(); } catch { return s; }
+}
+
+// --- Init ---
+loadJobs();
+refreshTimer = setInterval(loadJobs, 30000);
+</script>
+</body>
+</html>

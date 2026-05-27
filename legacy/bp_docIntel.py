@@ -149,6 +149,25 @@ def analyze_document(req: func.HttpRequest) -> func.HttpResponse:
       mimetype="application/json"
     )
   
+  # Check file type
+
+  img_types = [".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".gif"]
+  doc_types = [".pdf", ".docx", ".doc", ".xlsx", ".pptx", ".txt"]
+
+  fileType = os.path.splitext(file_url)[1].lower()
+
+  if fileType not in img_types + doc_types:
+    logging.error(f"Unsupported file type: {fileType}")
+    return func.HttpResponse(
+      body=json.dumps({"error": f"Unsupported file type: {fileType}"}),
+      status_code=400,
+      mimetype="application/json"
+    )
+  
+  # Check image size limits (for images only)
+  if fileType in img_types:
+    
+
   try:
     blob_service = BlobService()
     file_data = blob_service.download_file(file_url)

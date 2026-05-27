@@ -20,6 +20,15 @@
 
     "AZURE_TRANSLATE_KEY": "<your-translate-key>",
     "AZURE_TRANSLATE_REGION": "<region>",
-    "AZURE_TRANSLATE_TEXT_ENDPOINT": "https://<your-translate-resource>.cognitiveservices.azure.com/"
+    "AZURE_TRANSLATE_TEXT_ENDPOINT": "https://<your-translate-resource>.cognitiveservices.azure.com/",
+
+    "AZURE_SEARCH_ENDPOINT": "https://<your-search-resource>.search.windows.net",
+    "AZURE_SEARCH_KEY": "<your-search-admin-key>",
+    "AZURE_SEARCH_INDEX_NAME": "llm-summaries",
+    "AZURE_SEARCH_STORAGE_CONNECTION_STRING": "DefaultEndpointsProtocol=https;AccountName=<account>;AccountKey=<key>;EndpointSuffix=core.windows.net",
+    "AZURE_SEARCH_STORAGE_CONTAINER": "<container-with-llm-json>",
+    "AZURE_SEARCH_BLOB_PREFIX": "",
+    "AZURE_OPENAI_EMBEDDING_DEPLOYMENT": "text-embedding-ada-002",
+    "AZURE_OPENAI_EMBEDDING_DIMENSIONS": "1536"
   }
 }

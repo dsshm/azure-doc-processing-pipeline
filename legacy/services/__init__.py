@@ -5,5 +5,6 @@
 # from .svg_overlay_service import SVGOverlayService
 from .blob_service import BlobService
 from .llm_summary import DocumentSummarizer
+from .search_service import SearchService
 
-__all__ = ["BlobService", "DocumentSummarizer"]
+__all__ = ["BlobService", "DocumentSummarizer", "SearchService"]
