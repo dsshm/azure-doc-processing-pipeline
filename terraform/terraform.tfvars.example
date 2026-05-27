@@ -1,0 +1,12 @@
+# Copy this file to terraform.tfvars and fill in values.
+
+location     = "eastus2"
+project_name = "docpipeline"
+environment  = "dev"
+
+# After first ACR push, update this:
+# container_image = "docpipeline:v1.0.0"
+
+tags = {
+  owner = "your-team"
+}
