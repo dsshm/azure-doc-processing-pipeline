@@ -13,12 +13,13 @@ resource "azurerm_eventgrid_system_topic" "storage" {
 }
 
 resource "azurerm_eventgrid_system_topic_event_subscription" "blob_created" {
+  count               = var.deploy_container_app ? 1 : 0
   name                = "sub-blob-created"
   system_topic        = azurerm_eventgrid_system_topic.storage.name
   resource_group_name = azurerm_resource_group.main.name
 
   webhook_endpoint {
-    url                          = "https://${azurerm_container_app.main.ingress[0].fqdn}/api/events/blob"
+    url                          = "https://${azurerm_container_app.main[0].ingress[0].fqdn}/api/events/blob"
     max_events_per_batch              = 1
     preferred_batch_size_in_kilobytes = 64
   }

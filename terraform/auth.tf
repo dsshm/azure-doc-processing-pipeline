@@ -30,11 +30,12 @@ resource "azuread_application" "container_app" {
 
 # Redirect URI added separately — depends on CA FQDN, breaks the cycle
 resource "azuread_application_redirect_uris" "container_app" {
+  count          = var.deploy_container_app ? 1 : 0
   application_id = azuread_application.container_app.id
   type           = "Web"
 
   redirect_uris = [
-    "https://${azurerm_container_app.main.ingress[0].fqdn}/.auth/login/aad/callback"
+    "https://${azurerm_container_app.main[0].ingress[0].fqdn}/.auth/login/aad/callback"
   ]
 }
 
@@ -49,9 +50,10 @@ resource "azuread_application_password" "container_app" {
 }
 
 resource "azapi_resource" "container_app_auth" {
+  count     = var.deploy_container_app ? 1 : 0
   type      = "Microsoft.App/containerApps/authConfigs@2024-03-01"
   name      = "current"
-  parent_id = azurerm_container_app.main.id
+  parent_id = azurerm_container_app.main[0].id
 
   body = {
     properties = {

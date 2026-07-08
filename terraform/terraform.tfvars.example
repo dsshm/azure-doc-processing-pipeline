@@ -7,6 +7,9 @@ environment  = "dev"
 # After first ACR push, update this:
 # container_image = "docpipeline:v1.0.0"
 
+# Set to true after the image exists in ACR.
+deploy_container_app = false
+
 tags = {
   owner = "your-team"
 }

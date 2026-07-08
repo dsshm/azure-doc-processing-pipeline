@@ -16,6 +16,7 @@ resource "azurerm_container_app_environment" "main" {
 }
 
 resource "azurerm_container_app" "main" {
+  count                        = var.deploy_container_app ? 1 : 0
   name                         = "ca-${local.name_prefix}-${local.name_suffix}"
   container_app_environment_id = azurerm_container_app_environment.main.id
   resource_group_name          = azurerm_resource_group.main.name
@@ -56,7 +57,7 @@ resource "azurerm_container_app" "main" {
 
     container {
       name   = "docpipeline"
-      image  = "${azurerm_container_registry.main.login_server}/docpipeline:latest"
+      image  = "${azurerm_container_registry.main.login_server}/${var.container_image}"
       cpu    = var.container_cpu
       memory = var.container_memory
 

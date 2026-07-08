@@ -70,6 +70,12 @@ variable "container_image" {
   default     = "docpipeline:latest"
 }
 
+variable "deploy_container_app" {
+  description = "Whether to deploy the Container App and dependent resources. Keep false for initial infra bootstrap before first image push."
+  type        = bool
+  default     = false
+}
+
 variable "container_cpu" {
   description = "Container CPU cores"
   type        = number

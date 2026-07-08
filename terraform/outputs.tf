@@ -27,11 +27,11 @@ output "acr_login_server" {
 }
 
 output "container_app_fqdn" {
-  value = azurerm_container_app.main.ingress[0].fqdn
+  value = var.deploy_container_app ? azurerm_container_app.main[0].ingress[0].fqdn : null
 }
 
 output "container_app_url" {
-  value = "https://${azurerm_container_app.main.ingress[0].fqdn}"
+  value = var.deploy_container_app ? "https://${azurerm_container_app.main[0].ingress[0].fqdn}" : null
 }
 
 output "log_analytics_workspace_id" {
