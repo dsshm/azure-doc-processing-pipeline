@@ -50,6 +50,19 @@
   .retry-btn:hover,.delete-btn:hover{opacity:.85}
   .meta{font-size:.8rem;color:var(--muted);margin-top:.5rem}
 
+  .admin-card{background:var(--card);border-radius:8px;padding:1rem 1.25rem;margin-bottom:1rem;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+  .admin-card h2{font-size:1rem;margin-bottom:.35rem}
+  .admin-card p{font-size:.85rem;color:var(--muted);margin-bottom:.75rem}
+  .admin-controls{display:flex;gap:.75rem;align-items:center;flex-wrap:wrap}
+  .admin-controls label{font-size:.85rem;color:var(--text)}
+  .admin-controls input[type="number"]{width:5rem;padding:.35rem;border:1px solid var(--border);border-radius:4px}
+  .admin-controls input[type="checkbox"]{margin-right:.25rem}
+  .admin-btn{color:#fff;border:none;padding:.4rem 1rem;border-radius:4px;cursor:pointer;font-size:.85rem;background:var(--primary)}
+  .admin-btn.execute{background:var(--danger)}
+  .admin-btn:disabled{opacity:.55;cursor:not-allowed}
+  #backfill-result{margin-top:.75rem;font-size:.85rem}
+  #backfill-result pre{margin-top:.5rem;padding:.75rem;background:#f3f5f9;border:1px solid var(--border);border-radius:4px;white-space:pre-wrap;max-height:20rem;overflow:auto}
+
   .empty{text-align:center;padding:3rem;color:var(--muted)}
   .refresh-note{font-size:.75rem;color:var(--muted);margin-top:.5rem;text-align:right}
 </style>
@@ -73,6 +86,20 @@
     <div id="detail-actions" style="display:flex;gap:.5rem;flex-wrap:wrap"></div>
     <div class="meta" id="detail-meta"></div>
   </div>
+
+  <section class="admin-card" aria-labelledby="backfill-title">
+    <h2 id="backfill-title">Search Index Backfill</h2>
+    <p>Backfill missing Azure Maps lat/lon, rebuild missing search_text, and regenerate vectors missing current embedding metadata. Run a dry-run first, then execute a bounded batch.</p>
+    <div class="admin-controls">
+      <label>Limit <input id="backfill-limit" type="number" min="1" max="200" value="25" /></label>
+      <label><input id="backfill-include-geocoding" type="checkbox" checked /> Include geocoding</label>
+      <label><input id="backfill-include-chunks" type="checkbox" checked /> Include chunks</label>
+      <label><input id="backfill-force" type="checkbox" /> Force regenerate</label>
+      <button id="backfill-dry-run" class="admin-btn" onclick="runBackfill(true)">Dry run</button>
+      <button id="backfill-execute" class="admin-btn execute" onclick="runBackfill(false)">Execute</button>
+    </div>
+    <div id="backfill-result"></div>
+  </section>
 
   <div class="filters" id="filters">
     <button class="active" data-filter="">All</button>
@@ -212,6 +239,71 @@ async function deleteJob(jobId) {
   }
 }
 
+async function runBackfill(dryRun) {
+  const limit = Number(document.getElementById('backfill-limit').value || 25);
+  const includeGeocoding = document.getElementById('backfill-include-geocoding').checked;
+  const includeChunks = document.getElementById('backfill-include-chunks').checked;
+  const force = document.getElementById('backfill-force').checked;
+  const resultEl = document.getElementById('backfill-result');
+  const buttons = [
+    document.getElementById('backfill-dry-run'),
+    document.getElementById('backfill-execute'),
+  ];
+
+  if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
+    alert('Limit must be between 1 and 200.');
+    return;
+  }
+  if (!dryRun && !confirm(`Execute search-index backfill for up to ${limit} document(s)?`)) {
+    return;
+  }
+
+  buttons.forEach(button => button.disabled = true);
+  resultEl.innerHTML = `<span class="badge badge-processing">${dryRun ? 'Dry run' : 'Backfill'} running…</span>`;
+  try {
+    const res = await fetch(`${API}/api/admin/search-index/backfill`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        dry_run: dryRun,
+        limit,
+        include_geocoding: includeGeocoding,
+        include_chunks: includeChunks,
+        force,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      resultEl.innerHTML = `<div class="error-box">${esc(data.detail || 'Backfill failed')}</div>`;
+      return;
+    }
+    const verb = dryRun ? 'would update' : 'updated';
+    const updateCount = dryRun ? countStatus(data.results, 'would_update') : (data.updated ?? 0);
+    const scanned = data.candidate_documents_scanned ?? data.scanned ?? 0;
+    const scanLabel = data.force
+      ? 'result documents scanned'
+      : (data.include_geocoding ? 'stale/missing-geocode candidates scanned' : 'stale candidates scanned');
+    const emptyHint = (!data.force && scanned === 0)
+      ? `<div class="meta">No ${data.include_geocoding ? 'stale search-index or missing-geocode' : 'stale search-index'} candidates remain. Use Force regenerate to inspect or regenerate current documents.</div>`
+      : '';
+    resultEl.innerHTML = `
+      <div>
+        <span class="badge badge-completed">${dryRun ? 'Dry run complete' : 'Backfill complete'}</span>
+        ${scanLabel}: ${scanned}; ${verb} ${updateCount};
+        skipped ${data.skipped ?? 0}; failed ${data.failed ?? 0}; geocodes added ${data.geocoded_locations_added ?? 0}; generated embeddings ${data.generated_embeddings ?? 0}.
+      </div>
+      <div class="meta">${esc(data.message || '')}</div>
+      ${emptyHint}
+      <pre>${esc(JSON.stringify(data.results || [], null, 2))}</pre>`;
+    if (!dryRun) loadJobs();
+  } catch (err) {
+    console.error('Backfill failed', err);
+    resultEl.innerHTML = `<div class="error-box">${esc(err.message || String(err))}</div>`;
+  } finally {
+    buttons.forEach(button => button.disabled = false);
+  }
+}
+
 // --- Helpers ---
 function esc(s) {
   const d = document.createElement('div');
@@ -221,6 +313,9 @@ function esc(s) {
 function fmtDate(s) {
   if (!s) return '';
   try { return new Date(s).toLocaleString(); } catch { return s; }
+}
+function countStatus(items, status) {
+  return (items || []).filter(item => item.status === status).length;
 }
 
 // --- Init ---

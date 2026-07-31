@@ -17,7 +17,7 @@ resource "azurerm_storage_account" "main" {
   network_rules {
     default_action             = "Deny"
     bypass                     = ["AzureServices"]
-    ip_rules                   = ["71.200.56.126"]
+    ip_rules                   = var.allowed_ip_addresses
     virtual_network_subnet_ids = [azurerm_subnet.container_apps.id]
   }
 
@@ -27,7 +27,7 @@ resource "azurerm_storage_account" "main" {
     cors_rule {
       allowed_headers    = ["*"]
       allowed_methods    = ["GET", "HEAD", "PUT", "DELETE", "OPTIONS"]
-      allowed_origins    = ["https://portal.azure.com"]
+      allowed_origins    = ["https://portal.azure.com", "https://ms.portal.azure.com"]
       exposed_headers    = ["*"]
       max_age_in_seconds = 3600
     }

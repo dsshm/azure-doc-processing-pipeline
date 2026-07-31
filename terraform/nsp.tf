@@ -21,7 +21,7 @@ resource "azapi_resource" "nsp_profile" {
   body = {}
 }
 
-# Allow inbound from home IP
+# Allow inbound from approved public IPs
 resource "azapi_resource" "nsp_rule_home" {
   type      = "Microsoft.Network/networkSecurityPerimeters/profiles/accessRules@2023-08-01-preview"
   name      = "home"
@@ -30,7 +30,7 @@ resource "azapi_resource" "nsp_rule_home" {
   body = {
     properties = {
       direction       = "Inbound"
-      addressPrefixes = ["71.200.56.126/32"]
+      addressPrefixes = [for ip in var.allowed_ip_addresses : length(regexall("/", ip)) > 0 ? ip : "${ip}/32"]
     }
   }
 }
@@ -44,10 +44,10 @@ resource "azapi_resource" "nsp_rule_subscriptions" {
   body = {
     properties = {
       direction = "Inbound"
-      subscriptions = [
-        { id = "/subscriptions/${data.azurerm_subscription.current.subscription_id}" },
-        { id = "/subscriptions/4345216c-3da4-4537-97ff-2a9f5053a420" }
-      ]
+      subscriptions = concat(
+        [{ id = "/subscriptions/${data.azurerm_subscription.current.subscription_id}" }],
+        [for subscription_id in var.additional_nsp_subscription_ids : { id = "/subscriptions/${subscription_id}" }]
+      )
     }
   }
 }

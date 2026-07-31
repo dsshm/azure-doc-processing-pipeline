@@ -1,0 +1,245 @@
+{
+  "definition": {
+    "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+    "contentVersion": "1.0.0.0",
+    "triggers": {
+      "manual": {
+        "type": "Request",
+        "kind": "Http",
+        "inputs": {
+          "method": "POST",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "query": {
+                "type": "string"
+              },
+              "top": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "hybrid",
+                  "full-text",
+                  "vector"
+                ]
+              },
+              "vector_field": {
+                "type": "string",
+                "enum": [
+                  "summary_vector",
+                  "purpose_vector"
+                ]
+              }
+            },
+            "required": [
+              "query"
+            ]
+          }
+        }
+      }
+    },
+    "actions": {
+      "Normalize_query": {
+        "type": "Compose",
+        "inputs": "@trim(string(triggerBody()?['query']))",
+        "runAfter": {}
+      },
+      "Resolve_top": {
+        "type": "Compose",
+        "inputs": "@if(empty(triggerBody()?['top']), int(appsetting('SEARCH_DEFAULT_TOP')), int(triggerBody()?['top']))",
+        "runAfter": {
+          "Normalize_query": [
+            "Succeeded"
+          ]
+        }
+      },
+      "Resolve_mode": {
+        "type": "Compose",
+        "inputs": "@if(empty(triggerBody()?['mode']), 'hybrid', toLower(string(triggerBody()?['mode'])))",
+        "runAfter": {
+          "Resolve_top": [
+            "Succeeded"
+          ]
+        }
+      },
+      "Resolve_vector_field": {
+        "type": "Compose",
+        "inputs": "@if(empty(triggerBody()?['vector_field']), appsetting('SEARCH_DEFAULT_VECTOR_FIELD'), string(triggerBody()?['vector_field']))",
+        "runAfter": {
+          "Resolve_mode": [
+            "Succeeded"
+          ]
+        }
+      },
+      "Reject_empty_query": {
+        "type": "If",
+        "expression": "@empty(outputs('Normalize_query'))",
+        "actions": {
+          "Return_empty_query": {
+            "type": "Response",
+            "kind": "Http",
+            "inputs": {
+              "statusCode": 400,
+              "body": {
+                "error": "query must not be empty"
+              }
+            }
+          }
+        },
+        "else": {
+          "actions": {
+            "Reject_top_over_cap": {
+              "type": "If",
+              "expression": "@greater(outputs('Resolve_top'), int(appsetting('SEARCH_MAX_TOP')))",
+              "actions": {
+                "Return_top_over_cap": {
+                  "type": "Response",
+                  "kind": "Http",
+                  "inputs": {
+                    "statusCode": 400,
+                    "body": {
+                      "error": "top exceeds configured SEARCH_MAX_TOP",
+                      "maxTop": "@int(appsetting('SEARCH_MAX_TOP'))"
+                    }
+                  }
+                }
+              },
+              "else": {
+                "actions": {
+                  "Route_search_mode": {
+                    "type": "Switch",
+                    "expression": "@outputs('Resolve_mode')",
+                    "cases": {
+                      "Full_text": {
+                        "case": "full-text",
+                        "actions": {
+                          "Call_full_text_search": {
+                            "type": "Http",
+                            "inputs": {
+                              "method": "POST",
+                              "uri": "@{appsetting('CONTAINER_APP_BASE_URL')}/api/search/full-text",
+                              "headers": {
+                                "Content-Type": "application/json"
+                              },
+                              "body": {
+                                "query": "@{outputs('Normalize_query')}",
+                                "top": "@outputs('Resolve_top')"
+                              }
+                            }
+                          },
+                          "Return_full_text_search": {
+                            "type": "Response",
+                            "kind": "Http",
+                            "inputs": {
+                              "statusCode": "@outputs('Call_full_text_search')?['statusCode']",
+                              "headers": {
+                                "Content-Type": "application/json"
+                              },
+                              "body": "@body('Call_full_text_search')"
+                            },
+                            "runAfter": {
+                              "Call_full_text_search": [
+                                "Succeeded",
+                                "Failed",
+                                "TimedOut"
+                              ]
+                            }
+                          }
+                        }
+                      },
+                      "Vector": {
+                        "case": "vector",
+                        "actions": {
+                          "Call_vector_search": {
+                            "type": "Http",
+                            "inputs": {
+                              "method": "POST",
+                              "uri": "@{appsetting('CONTAINER_APP_BASE_URL')}/api/search",
+                              "headers": {
+                                "Content-Type": "application/json"
+                              },
+                              "body": {
+                                "query": "@{outputs('Normalize_query')}",
+                                "top": "@outputs('Resolve_top')",
+                                "vector_field": "@{outputs('Resolve_vector_field')}"
+                              }
+                            }
+                          },
+                          "Return_vector_search": {
+                            "type": "Response",
+                            "kind": "Http",
+                            "inputs": {
+                              "statusCode": "@outputs('Call_vector_search')?['statusCode']",
+                              "headers": {
+                                "Content-Type": "application/json"
+                              },
+                              "body": "@body('Call_vector_search')"
+                            },
+                            "runAfter": {
+                              "Call_vector_search": [
+                                "Succeeded",
+                                "Failed",
+                                "TimedOut"
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "default": {
+                      "actions": {
+                        "Call_hybrid_search": {
+                          "type": "Http",
+                          "inputs": {
+                            "method": "POST",
+                            "uri": "@{appsetting('CONTAINER_APP_BASE_URL')}/api/search/hybrid",
+                            "headers": {
+                              "Content-Type": "application/json"
+                            },
+                            "body": {
+                              "query": "@{outputs('Normalize_query')}",
+                              "top": "@outputs('Resolve_top')",
+                              "vector_field": "@{outputs('Resolve_vector_field')}"
+                            }
+                          }
+                        },
+                        "Return_hybrid_search": {
+                          "type": "Response",
+                          "kind": "Http",
+                          "inputs": {
+                            "statusCode": "@outputs('Call_hybrid_search')?['statusCode']",
+                            "headers": {
+                              "Content-Type": "application/json"
+                            },
+                            "body": "@body('Call_hybrid_search')"
+                          },
+                          "runAfter": {
+                            "Call_hybrid_search": [
+                              "Succeeded",
+                              "Failed",
+                              "TimedOut"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "runAfter": {
+          "Resolve_vector_field": [
+            "Succeeded"
+          ]
+        }
+      }
+    },
+    "outputs": {}
+  },
+  "kind": "Stateless"
+}

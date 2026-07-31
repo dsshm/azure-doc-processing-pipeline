@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Annotated, Any, Optional
 
+from azure.core import MatchConditions
 from azure.cosmos import CosmosClient, PartitionKey
 from azure.cosmos.exceptions import CosmosResourceNotFoundError
 from azure.identity import DefaultAzureCredential
@@ -128,8 +130,74 @@ class CosmosPlugin:
         params = [{"name": "@limit", "value": limit}]
         return list(self._results.query_items(query=query, parameters=params, enable_cross_partition_query=True))
 
+    def list_search_index_backfill_candidates(
+        self,
+        limit: int,
+        search_index_version: str,
+        embedding_model: str,
+        embedding_api_version: str,
+        force: bool = False,
+        include_chunks: bool = True,
+        include_geocoding: bool = True,
+    ) -> list[dict[str, Any]]:
+        safe_limit = self._safe_top(limit)
+        if force:
+            query = f"SELECT TOP {safe_limit} * FROM c ORDER BY c.metadata.processing_timestamp DESC"
+            params: list[dict[str, Any]] = []
+        else:
+            geocoding_predicate = ""
+            if include_geocoding:
+                geocoding_predicate = (
+                    "OR (IS_DEFINED(c.key_fields.entities.locations) "
+                    "AND ARRAY_LENGTH(c.key_fields.entities.locations) > 0 "
+                    "AND (NOT IS_DEFINED(c.key_fields.entities.geocoded_locations) "
+                    "OR ARRAY_LENGTH(c.key_fields.entities.geocoded_locations) = 0 "
+                    "OR EXISTS(SELECT VALUE g FROM g IN c.key_fields.entities.geocoded_locations "
+                    "WHERE NOT IS_DEFINED(g.latitude) OR NOT IS_DEFINED(g.longitude)))) "
+                )
+            query = (
+                f"SELECT TOP {safe_limit} * FROM c "
+                "WHERE NOT IS_DEFINED(c.search_index_metadata) "
+                "OR c.search_index_metadata.version != @version "
+                "OR NOT IS_DEFINED(c.search_index_metadata.status) "
+                "OR c.search_index_metadata.status != 'complete' "
+                "OR c.search_index_metadata.embedding_model != @embeddingModel "
+                "OR c.search_index_metadata.embedding_api_version != @embeddingApiVersion "
+                "OR NOT IS_DEFINED(c.search_index_metadata.include_chunks) "
+                "OR c.search_index_metadata.include_chunks != @includeChunks "
+                f"{geocoding_predicate}"
+                "ORDER BY c.metadata.processing_timestamp DESC"
+            )
+            params = [
+                {"name": "@version", "value": search_index_version},
+                {"name": "@embeddingModel", "value": embedding_model},
+                {"name": "@embeddingApiVersion", "value": embedding_api_version},
+                {"name": "@includeChunks", "value": include_chunks},
+            ]
+        return list(self._results.query_items(query=query, parameters=params, enable_cross_partition_query=True))
+
+    def replace_result_document(self, result: dict[str, Any]) -> dict[str, Any]:
+        item_id = result.get("id")
+        partition_key = result.get("jobId") or item_id
+        if not item_id or not partition_key:
+            raise ValueError("Result document must include id and jobId before replacement")
+
+        etag = result.get("_etag")
+        body = {
+            key: value
+            for key, value in result.items()
+            if not key.startswith("_")
+        }
+        kwargs: dict[str, Any] = {}
+        if etag:
+            kwargs["etag"] = etag
+            kwargs["match_condition"] = MatchConditions.IfNotModified
+
+        return self._results.replace_item(item=item_id, body=body, **kwargs)
+
     _ALLOWED_VECTOR_FIELDS = {"summary_vector", "purpose_vector"}
     _FILTER_ALLOWED_PATTERN = None  # compiled on first use
+    _SEARCH_TERM_PATTERN = re.compile(r"[\w][\w'-]*")
 
     @kernel_function(name="vector_search", description="Search results by vector similarity.")
     def vector_search(
@@ -144,7 +212,6 @@ class CosmosPlugin:
             raise ValueError(f"vector_field must be one of {self._ALLOWED_VECTOR_FIELDS}")
 
         # Validate filter to prevent injection — allow only simple field comparisons
-        import re
         if self._FILTER_ALLOWED_PATTERN is None:
             CosmosPlugin._FILTER_ALLOWED_PATTERN = re.compile(
                 r"^c\.[a-zA-Z_]+\s*=\s*'[^']*'$"
@@ -154,15 +221,16 @@ class CosmosPlugin:
             if not self._FILTER_ALLOWED_PATTERN.match(filters.strip()):
                 raise ValueError("Invalid filter format. Expected: c.field = 'value'")
             where_clause = f"AND {filters}"
+        safe_top = self._safe_top(top)
         query = (
-            f"SELECT TOP @top c.id, c.jobId, c.title, c.doc_type, c.summary, "
+            f"SELECT TOP {safe_top} c.id, c.jobId, c.title, c.doc_type, c.summary, c.search_text, "
             f"c.key_fields.document_purpose AS document_purpose, "
+            f"c.key_fields.entities.geocoded_locations AS geocoded_locations, "
             f"VectorDistance(c.{vector_field}, @queryVector) AS score "
-            f"FROM c WHERE c.summary_vector != null {where_clause} "
+            f"FROM c WHERE IS_DEFINED(c.{vector_field}) {where_clause} "
             f"ORDER BY VectorDistance(c.{vector_field}, @queryVector)"
         )
         params = [
-            {"name": "@top", "value": top},
             {"name": "@queryVector", "value": query_vector},
         ]
         return list(self._results.query_items(
@@ -176,8 +244,9 @@ class CosmosPlugin:
         top: Annotated[int, "Number of results"] = 10,
     ) -> list[dict[str, Any]]:
         """Search across chunk-level vectors for granular passage retrieval."""
+        safe_top = self._safe_top(top)
         query = (
-            "SELECT TOP @top c.id, c.jobId, c.title, c.doc_type, "
+            f"SELECT TOP {safe_top} c.id, c.jobId, c.title, c.doc_type, "
             "chunk.chunk_index, chunk.text AS chunk_text, "
             "VectorDistance(chunk.vector, @queryVector) AS score "
             "FROM c JOIN chunk IN c.chunks "
@@ -185,9 +254,81 @@ class CosmosPlugin:
             "ORDER BY VectorDistance(chunk.vector, @queryVector)"
         )
         params = [
-            {"name": "@top", "value": top},
             {"name": "@queryVector", "value": query_vector},
         ]
         return list(self._results.query_items(
             query=query, parameters=params, enable_cross_partition_query=True,
         ))
+
+    @kernel_function(name="full_text_search", description="Search results by Cosmos DB full-text scoring.")
+    def full_text_search(
+        self,
+        query_text: Annotated[str, "Search text"],
+        top: Annotated[int, "Number of results"] = 10,
+    ) -> list[dict[str, Any]]:
+        terms = self._search_terms(query_text)
+        safe_top = self._safe_top(top)
+        term_args = ", ".join(param["name"] for param in terms)
+        query = (
+            f"SELECT TOP {safe_top} c.id, c.jobId, c.title, c.doc_type, c.summary, c.search_text, "
+            f"c.key_fields.document_purpose AS document_purpose, "
+            f"c.key_fields.entities.geocoded_locations AS geocoded_locations "
+            f"FROM c WHERE IS_DEFINED(c.search_text) AND FullTextContainsAny(c.search_text, {term_args}) "
+            f"ORDER BY RANK FullTextScore(c.search_text, {term_args})"
+        )
+        return list(self._results.query_items(
+            query=query, parameters=terms, enable_cross_partition_query=True,
+        ))
+
+    @kernel_function(name="hybrid_search", description="Search results using Cosmos DB hybrid vector + full-text ranking.")
+    def hybrid_search(
+        self,
+        query_text: Annotated[str, "Search text"],
+        query_vector: Annotated[list[float], "Embedding vector for the search query"],
+        vector_field: Annotated[str, "Vector field to search: summary_vector, purpose_vector"] = "summary_vector",
+        top: Annotated[int, "Number of results"] = 10,
+    ) -> list[dict[str, Any]]:
+        if vector_field not in self._ALLOWED_VECTOR_FIELDS:
+            raise ValueError(f"vector_field must be one of {self._ALLOWED_VECTOR_FIELDS}")
+
+        terms = self._search_terms(query_text)
+        safe_top = self._safe_top(top)
+        term_args = ", ".join(param["name"] for param in terms)
+        query = (
+            f"SELECT TOP {safe_top} c.id, c.jobId, c.title, c.doc_type, c.summary, c.search_text, "
+            f"c.key_fields.document_purpose AS document_purpose, "
+            f"c.key_fields.entities.geocoded_locations AS geocoded_locations, "
+            f"VectorDistance(c.{vector_field}, @queryVector) AS vector_score "
+            f"FROM c WHERE IS_DEFINED(c.{vector_field}) AND IS_DEFINED(c.search_text) "
+            f"AND FullTextContainsAny(c.search_text, {term_args}) "
+            f"ORDER BY RANK RRF(VectorDistance(c.{vector_field}, @queryVector), "
+            f"FullTextScore(c.search_text, {term_args}), [2, 1])"
+        )
+        params = [{"name": "@queryVector", "value": query_vector}, *terms]
+        return list(self._results.query_items(
+            query=query, parameters=params, enable_cross_partition_query=True,
+        ))
+
+    def _safe_top(self, top: int) -> int:
+        safe_top = int(top)
+        if safe_top < 1:
+            raise ValueError("top must be at least 1")
+        return safe_top
+
+    def _search_terms(self, query_text: str) -> list[dict[str, str]]:
+        normalized_query = query_text.strip()
+        if not normalized_query:
+            raise ValueError("query_text must not be empty")
+
+        terms = [normalized_query]
+        for match in self._SEARCH_TERM_PATTERN.findall(normalized_query):
+            term = match.strip()
+            if len(term) > 1 and term.casefold() not in {existing.casefold() for existing in terms}:
+                terms.append(term)
+            if len(terms) >= 12:
+                break
+
+        return [
+            {"name": f"@term{index}", "value": term}
+            for index, term in enumerate(terms)
+        ]

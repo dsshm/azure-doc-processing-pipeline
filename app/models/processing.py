@@ -60,6 +60,8 @@ class ProcessingJob(BaseModel):
         ProcessingStep(name="move_to_processing"),
         ProcessingStep(name="document_extraction"),
         ProcessingStep(name="llm_analysis"),
+        ProcessingStep(name="geocode_locations"),
+        ProcessingStep(name="build_search_index"),
         ProcessingStep(name="save_results"),
         ProcessingStep(name="move_original"),
     ])
@@ -76,5 +78,10 @@ class ProcessingJob(BaseModel):
         self.status = JobStatus.COMPLETED
         self.touch()
 
-    def get_step(self, name: str) -> Optional[ProcessingStep]:
-        return next((s for s in self.steps if s.name == name), None)
+    def get_step(self, name: str) -> ProcessingStep:
+        step = next((s for s in self.steps if s.name == name), None)
+        if step:
+            return step
+        step = ProcessingStep(name=name)
+        self.steps.append(step)
+        return step

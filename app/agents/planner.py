@@ -6,8 +6,10 @@ chat-based agent negotiation — the pipeline steps are fixed:
   1. Move blob from INGEST → PROCESSING
   2. Download & extract via Document Intelligence
   3. Per-page LLM analysis → consolidated result
-  4. Save result JSON to COMPLETED container + Cosmos DB
-  5. Move original from PROCESSING → ORIGINALDOCUMENT
+  4. Enrich extracted locations with Azure Maps fuzzy search
+  5. Build full-text search content and vector embeddings
+  6. Save result JSON to COMPLETED container + Cosmos DB
+  7. Move original from PROCESSING → ORIGINALDOCUMENT
 """
 
 from __future__ import annotations
@@ -23,6 +25,9 @@ from app.plugins.blob_plugin import BlobPlugin
 from app.plugins.cosmos_plugin import CosmosPlugin
 from app.plugins.doc_intel_plugin import DocIntelPlugin
 from app.plugins.llm_plugin import LLMPlugin
+from app.plugins.maps_plugin import AzureMapsPlugin
+from app.services.geocoding import apply_geocoding
+from app.services.search_indexing import apply_search_index
 
 logger = logging.getLogger(__name__)
 
@@ -41,11 +46,13 @@ class PipelineOrchestrator:
         cosmos: CosmosPlugin | None = None,
         doc_intel: DocIntelPlugin | None = None,
         llm: LLMPlugin | None = None,
+        maps: AzureMapsPlugin | None = None,
     ):
         self.blob = blob or BlobPlugin()
         self.cosmos = cosmos or CosmosPlugin()
         self.doc_intel = doc_intel or DocIntelPlugin()
         self.llm = llm or LLMPlugin()
+        self.maps = maps or AzureMapsPlugin()
 
     async def process(self, job: ProcessingJob) -> ProcessingJob:
         """Run the full pipeline for *job*.  Updates Cosmos DB along the way."""
@@ -115,13 +122,29 @@ class PipelineOrchestrator:
                 file_name=job.file_name,
             )
 
-            # Generate vector embeddings
-            consolidated = self._generate_embeddings(consolidated, pages)
-
             step.complete()
             self.cosmos.update_job(job)
 
-            # --- Step 4: save results ---
+            # --- Step 4: location geocoding ---
+            step = job.get_step("geocode_locations")
+            step.start()
+            consolidated = apply_geocoding(consolidated, self.maps).document
+            step.complete()
+            self.cosmos.update_job(job)
+
+            # --- Step 5: build search text + vector embeddings ---
+            step = job.get_step("build_search_index")
+            step.start()
+            consolidated = apply_search_index(
+                document=consolidated,
+                llm=self.llm,
+                pages=pages,
+                fail_fast=False,
+            ).document
+            step.complete()
+            self.cosmos.update_job(job)
+
+            # --- Step 6: save results ---
             step = job.get_step("save_results")
             step.start()
 
@@ -137,7 +160,7 @@ class PipelineOrchestrator:
             step.complete()
             self.cosmos.update_job(job)
 
-            # --- Step 5: move original to ORIGINALDOCUMENT ---
+            # --- Step 7: move original to ORIGINALDOCUMENT ---
             step = job.get_step("move_original")
             step.start()
             self.blob.move_blob(
@@ -164,54 +187,3 @@ class PipelineOrchestrator:
             except Exception:
                 logger.error("Failed to persist job failure state for %s", job.id)
             return job
-
-    # ------------------------------------------------------------------
-    # Embedding helpers
-    # ------------------------------------------------------------------
-
-    def _generate_embeddings(
-        self,
-        consolidated: dict[str, Any],
-        pages: list[dict[str, Any]],
-    ) -> dict[str, Any]:
-        """Generate vector embeddings and attach them to the consolidated result.
-
-        Embeds:
-        - summary → summary_vector
-        - key_fields.document_purpose → purpose_vector
-        - per-page text chunks → chunks[].vector
-        """
-        # 1. Summary vector
-        summary_text = consolidated.get("summary", "")
-        if summary_text:
-            try:
-                consolidated["summary_vector"] = self.llm.generate_embedding(text=summary_text)
-            except Exception as exc:
-                logger.warning("Failed to embed summary: %s", exc)
-
-        # 2. Purpose vector
-        kf = consolidated.get("key_fields") or {}
-        purpose_text = kf.get("document_purpose", "") if isinstance(kf, dict) else ""
-        if purpose_text:
-            try:
-                consolidated["purpose_vector"] = self.llm.generate_embedding(text=purpose_text)
-            except Exception as exc:
-                logger.warning("Failed to embed document_purpose: %s", exc)
-
-        # 3. Chunk vectors — embed each page's content
-        chunks: list[dict[str, Any]] = []
-        for idx, page in enumerate(pages):
-            text = page.get("content", "")
-            if not text:
-                continue
-            chunk: dict[str, Any] = {"chunk_index": idx, "text": text}
-            try:
-                chunk["vector"] = self.llm.generate_embedding(text=text)
-            except Exception as exc:
-                logger.warning("Failed to embed chunk %d: %s", idx, exc)
-            chunks.append(chunk)
-
-        if chunks:
-            consolidated["chunks"] = chunks
-
-        return consolidated
