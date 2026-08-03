@@ -71,8 +71,10 @@ The pipeline accepts any file type supported by the Azure Document Intelligence 
 | `GET` | `/api/documents/{job_id}` | Get full analysis result |
 | `GET` | `/api/documents/{job_id}/original` | Download original document (SAS URL redirect) |
 | `POST` | `/api/search` | Vector similarity search (`{query, vector_field, top, filter}`) |
+| `POST` | `/api/search/vector` | Vector similarity search with a caller-supplied query embedding (`{query, query_vector, vector_field, top, filter}`) |
 | `POST` | `/api/search/full-text` | Cosmos DB full-text search over `search_text` (`{query, top}`) |
 | `POST` | `/api/search/hybrid` | Cosmos DB hybrid search with vector + full-text RRF ranking; results must also match full text (`{query, vector_field, top}`) |
+| `POST` | `/api/search/hybrid/vector` | Cosmos DB hybrid search with a caller-supplied query embedding (`{query, query_vector, vector_field, top}`) |
 | `POST` | `/api/search/chunks` | Chunk-level vector search (`{query, top}`) |
 | `POST` | `/api/admin/search-index/backfill` | Dry-run or execute a bounded batch backfill for existing Cosmos results (`{dry_run, limit, force, include_geocoding, include_chunks}`) |
 | `POST` | `/api/admin/search-index/backfill/{job_id}` | Dry-run or execute backfill for one result document |
@@ -281,6 +283,11 @@ curl -X POST http://localhost:8000/api/search/full-text \
 curl -X POST http://localhost:8000/api/search/hybrid \
   -H "Content-Type: application/json" \
   -d '{"query": "restaurant near Franklin TN", "top": 30}'
+
+# Hybrid search with a precomputed query embedding
+curl -X POST http://localhost:8000/api/search/hybrid/vector \
+  -H "Content-Type: application/json" \
+  -d '{"query": "restaurant near Franklin TN", "query_vector": [0.01, 0.02], "top": 30}'
 ```
 
 ### Testing Cosmos full-text/vector/hybrid search with PowerShell
@@ -462,16 +469,17 @@ Cosmos DB full-text search can index existing string fields by changing the cont
 
 The Bicep deployment creates a **Logic App Standard** resource on a Workflow Standard plan, not a Consumption workflow. This is the supported single-tenant model for new Logic Apps. If you need full App Service isolation, deploy the Standard app into an ASE v3 plan; legacy Logic Apps ISE is not the recommended path for new workloads.
 
-The workflow source lives in `logicapp\SearchDocuments\workflow.json`. It is a thin facade:
+The workflow source lives in `logicapp\SearchDocuments\workflow.json`. It is a key-protected search facade:
 
 1. A caller invokes the `SearchDocuments` HTTP trigger with the callback URL `sig` key.
 2. The workflow validates `query` and `top`.
 3. The workflow routes `mode`:
-   - `hybrid` -> `POST /api/search/hybrid`
+  - `hybrid` -> calls Azure OpenAI embeddings with the Logic App managed identity, then calls `POST /api/search/hybrid/vector`
    - `full-text` -> `POST /api/search/full-text`
-   - `vector` -> `POST /api/search`
-4. The Container App generates embeddings for vector/hybrid modes and queries Cosmos DB.
-5. The workflow returns the Container App status code and response body unchanged.
+  - `vector` -> calls Azure OpenAI embeddings with the Logic App managed identity, then calls `POST /api/search/vector`
+4. If Azure OpenAI does not return a usable embedding for `hybrid` or `vector`, the workflow falls back to `POST /api/search/full-text`.
+5. The Container App uses the supplied query vector to query Cosmos DB, so the Logic App owns query-time vectorization while the app still owns Cosmos query construction.
+6. The workflow returns the Container App status code and response body. Response headers include `x-docpipeline-search-mode`; fallback responses set it to `full-text-fallback`.
 
 Request body:
 
@@ -496,7 +504,9 @@ Deploy or update workflow code:
 
 The script returns the HTTP trigger callback URL. This URL is key-protected; rotate/regenerate the trigger key if the URL is exposed. Store it as a secret in Power Platform or whichever client calls the workflow.
 
-Direct Cosmos access from Logic Apps is possible, but Cosmos DB REST calls with Entra ID require Cosmos-specific `type=aad&ver=1.0&sig=<token>` authorization header encoding. `scripts\Test-DocumentSearch.ps1` demonstrates that lower-level flow for testing. The deployed Logic App intentionally delegates embedding and Cosmos query construction to the Container App so there is one implementation of the search logic.
+The Bicep and Terraform deployments create the Logic App Standard host, app settings, Azure OpenAI RBAC, and a dedicated regional VNet integration subnet so the workflow can reach the private Azure OpenAI endpoint. Logic App Standard workflows are file content under the workflow app, and the Microsoft.Web provider in this environment does not expose a first-class `sites/workflows` child resource for those files. Deploy workflow code with `scripts\Deploy-LogicAppWorkflow.ps1` after infrastructure deployment.
+
+Direct Cosmos access from Logic Apps is possible, but Cosmos DB REST calls with Entra ID require Cosmos-specific `type=aad&ver=1.0&sig=<token>` authorization header encoding. `scripts\Test-DocumentSearch.ps1` demonstrates that lower-level flow for testing. The deployed Logic App intentionally delegates Cosmos query construction to the Container App so there is one implementation of the search logic, while query-time embeddings are generated in the workflow.
 
 ## Monitoring and KQL
 
@@ -535,7 +545,7 @@ The Container App uses **system-assigned managed identity** with these roles:
 
 Entra ID Easy Auth protects the web UI and API. Event Grid webhook and health endpoints are excluded from auth.
 
-The Logic App Standard HTTP trigger is protected by its callback URL signature (`sig` query string). The workflow currently calls the Container App facade, so it does not need direct Cosmos/OpenAI RBAC assignments. If you change the workflow to query Cosmos or Azure OpenAI directly, assign the Logic App system identity `Cosmos DB Built-in Data Reader` and `Cognitive Services OpenAI User`.
+The Logic App Standard HTTP trigger is protected by its callback URL signature (`sig` query string). The workflow uses its system-assigned managed identity to call Azure OpenAI embeddings and then calls the Container App search facade. The Logic App identity needs `Cognitive Services OpenAI User` on the Azure OpenAI account; it does not need Cosmos DB RBAC unless you change the workflow to query Cosmos directly.
 
 ### Grant Cosmos DB read access to users
 

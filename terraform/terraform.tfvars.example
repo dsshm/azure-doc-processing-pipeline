@@ -12,6 +12,9 @@ allowed_ip_addresses = [
 # Additional Cosmos-only data-plane public IPs.
 cosmos_allowed_ip_addresses = []
 
+# Optional network overrides.
+# logic_app_integration_subnet_cidr = "10.0.4.0/26"
+
 # After first ACR push, update this:
 # container_image = "docpipeline:v1.0.0"
 

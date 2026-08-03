@@ -30,6 +30,9 @@ param privateEndpointsSubnetCidr string = '10.0.2.0/24'
 @description('CIDR for the AI services subnet.')
 param aiServicesSubnetCidr string = '10.0.3.0/24'
 
+@description('CIDR for the Logic App Standard regional VNet integration subnet.')
+param logicAppIntegrationSubnetCidr string = '10.0.4.0/26'
+
 @description('Azure OpenAI chat model deployment name.')
 param openaiModelName string = 'gpt-5.1'
 
@@ -167,6 +170,7 @@ module documentPipeline './modules/document-pipeline.bicep' = {
     containerAppSubnetCidr: containerAppSubnetCidr
     privateEndpointsSubnetCidr: privateEndpointsSubnetCidr
     aiServicesSubnetCidr: aiServicesSubnetCidr
+    logicAppIntegrationSubnetCidr: logicAppIntegrationSubnetCidr
     openaiModelName: openaiModelName
     openaiModelVersion: openaiModelVersion
     openaiModelSkuName: openaiModelSkuName

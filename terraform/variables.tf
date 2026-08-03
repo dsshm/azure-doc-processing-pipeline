@@ -58,6 +58,12 @@ variable "ai_services_subnet_cidr" {
   default     = "10.0.3.0/24"
 }
 
+variable "logic_app_integration_subnet_cidr" {
+  description = "CIDR for the Logic App Standard regional VNet integration subnet"
+  type        = string
+  default     = "10.0.4.0/26"
+}
+
 variable "openai_model_name" {
   description = "Azure OpenAI chat model deployment name"
   type        = string

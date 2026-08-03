@@ -71,6 +71,13 @@ resource "azurerm_role_assignment" "ca_openai_user" {
   principal_id         = azurerm_container_app.main.identity[0].principal_id
 }
 
+# --- Azure OpenAI: Logic App query vectorization ---
+resource "azurerm_role_assignment" "logic_app_openai_user" {
+  scope                = azurerm_cognitive_account.openai.id
+  role_definition_name = "Cognitive Services OpenAI User"
+  principal_id         = azurerm_logic_app_standard.search.identity[0].principal_id
+}
+
 # --- Document Intelligence: Cognitive Services User ---
 resource "azurerm_role_assignment" "ca_docintel_user" {
   scope                = azurerm_cognitive_account.docintel.id

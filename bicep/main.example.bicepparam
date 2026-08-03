@@ -14,6 +14,7 @@ param vnetAddressSpace = [
 param containerAppSubnetCidr = '10.0.0.0/23'
 param privateEndpointsSubnetCidr = '10.0.2.0/24'
 param aiServicesSubnetCidr = '10.0.3.0/24'
+param logicAppIntegrationSubnetCidr = '10.0.4.0/26'
 
 param openaiModelName = 'gpt-5.1'
 param openaiModelVersion = '2025-11-13'

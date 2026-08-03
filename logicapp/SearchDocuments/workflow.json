@@ -49,7 +49,7 @@
       },
       "Resolve_top": {
         "type": "Compose",
-        "inputs": "@if(empty(triggerBody()?['top']), int(appsetting('SEARCH_DEFAULT_TOP')), int(triggerBody()?['top']))",
+        "inputs": "@if(equals(triggerBody()?['top'], null), int(appsetting('SEARCH_DEFAULT_TOP')), int(triggerBody()?['top']))",
         "runAfter": {
           "Normalize_query": [
             "Succeeded"
@@ -136,7 +136,8 @@
                             "inputs": {
                               "statusCode": "@outputs('Call_full_text_search')?['statusCode']",
                               "headers": {
-                                "Content-Type": "application/json"
+                                "Content-Type": "application/json",
+                                "x-docpipeline-search-mode": "full-text"
                               },
                               "body": "@body('Call_full_text_search')"
                             },
@@ -153,33 +154,103 @@
                       "Vector": {
                         "case": "vector",
                         "actions": {
-                          "Call_vector_search": {
+                          "Create_vector_query_embedding": {
                             "type": "Http",
                             "inputs": {
                               "method": "POST",
-                              "uri": "@{appsetting('CONTAINER_APP_BASE_URL')}/api/search",
+                              "uri": "@{appsetting('AZURE_OPENAI_ENDPOINT')}/openai/deployments/@{appsetting('AZURE_OPENAI_EMBEDDING_MODEL')}/embeddings?api-version=@{appsetting('AZURE_OPENAI_EMBEDDING_API_VERSION')}",
                               "headers": {
                                 "Content-Type": "application/json"
                               },
+                              "authentication": {
+                                "type": "ManagedServiceIdentity",
+                                "audience": "https://cognitiveservices.azure.com"
+                              },
                               "body": {
-                                "query": "@{outputs('Normalize_query')}",
-                                "top": "@outputs('Resolve_top')",
-                                "vector_field": "@{outputs('Resolve_vector_field')}"
+                                "input": "@{outputs('Normalize_query')}"
                               }
                             }
                           },
-                          "Return_vector_search": {
-                            "type": "Response",
-                            "kind": "Http",
-                            "inputs": {
-                              "statusCode": "@outputs('Call_vector_search')?['statusCode']",
-                              "headers": {
-                                "Content-Type": "application/json"
+                          "Use_vector_embedding_or_fallback": {
+                            "type": "If",
+                            "expression": "@and(equals(outputs('Create_vector_query_embedding')?['statusCode'], 200), not(empty(body('Create_vector_query_embedding')?['data']?[0]?['embedding'])))",
+                            "actions": {
+                              "Call_vector_search_with_embedding": {
+                                "type": "Http",
+                                "inputs": {
+                                  "method": "POST",
+                                  "uri": "@{appsetting('CONTAINER_APP_BASE_URL')}/api/search/vector",
+                                  "headers": {
+                                    "Content-Type": "application/json"
+                                  },
+                                  "body": {
+                                    "query": "@{outputs('Normalize_query')}",
+                                    "top": "@outputs('Resolve_top')",
+                                    "vector_field": "@{outputs('Resolve_vector_field')}",
+                                    "query_vector": "@body('Create_vector_query_embedding')?['data']?[0]?['embedding']"
+                                  }
+                                }
                               },
-                              "body": "@body('Call_vector_search')"
+                              "Return_vector_search": {
+                                "type": "Response",
+                                "kind": "Http",
+                                "inputs": {
+                                  "statusCode": "@outputs('Call_vector_search_with_embedding')?['statusCode']",
+                                  "headers": {
+                                    "Content-Type": "application/json",
+                                    "x-docpipeline-search-mode": "vector"
+                                  },
+                                  "body": "@body('Call_vector_search_with_embedding')"
+                                },
+                                "runAfter": {
+                                  "Call_vector_search_with_embedding": [
+                                    "Succeeded",
+                                    "Failed",
+                                    "TimedOut"
+                                  ]
+                                }
+                              }
+                            },
+                            "else": {
+                              "actions": {
+                                "Call_vector_fallback_full_text": {
+                                  "type": "Http",
+                                  "inputs": {
+                                    "method": "POST",
+                                    "uri": "@{appsetting('CONTAINER_APP_BASE_URL')}/api/search/full-text",
+                                    "headers": {
+                                      "Content-Type": "application/json"
+                                    },
+                                    "body": {
+                                      "query": "@{outputs('Normalize_query')}",
+                                      "top": "@outputs('Resolve_top')"
+                                    }
+                                  }
+                                },
+                                "Return_vector_fallback_full_text": {
+                                  "type": "Response",
+                                  "kind": "Http",
+                                  "inputs": {
+                                    "statusCode": "@outputs('Call_vector_fallback_full_text')?['statusCode']",
+                                    "headers": {
+                                      "Content-Type": "application/json",
+                                      "x-docpipeline-search-mode": "full-text-fallback",
+                                      "x-docpipeline-fallback-reason": "embedding-unavailable"
+                                    },
+                                    "body": "@body('Call_vector_fallback_full_text')"
+                                  },
+                                  "runAfter": {
+                                    "Call_vector_fallback_full_text": [
+                                      "Succeeded",
+                                      "Failed",
+                                      "TimedOut"
+                                    ]
+                                  }
+                                }
+                              }
                             },
                             "runAfter": {
-                              "Call_vector_search": [
+                              "Create_vector_query_embedding": [
                                 "Succeeded",
                                 "Failed",
                                 "TimedOut"
@@ -191,33 +262,103 @@
                     },
                     "default": {
                       "actions": {
-                        "Call_hybrid_search": {
+                        "Create_hybrid_query_embedding": {
                           "type": "Http",
                           "inputs": {
                             "method": "POST",
-                            "uri": "@{appsetting('CONTAINER_APP_BASE_URL')}/api/search/hybrid",
+                            "uri": "@{appsetting('AZURE_OPENAI_ENDPOINT')}/openai/deployments/@{appsetting('AZURE_OPENAI_EMBEDDING_MODEL')}/embeddings?api-version=@{appsetting('AZURE_OPENAI_EMBEDDING_API_VERSION')}",
                             "headers": {
                               "Content-Type": "application/json"
                             },
+                            "authentication": {
+                              "type": "ManagedServiceIdentity",
+                              "audience": "https://cognitiveservices.azure.com"
+                            },
                             "body": {
-                              "query": "@{outputs('Normalize_query')}",
-                              "top": "@outputs('Resolve_top')",
-                              "vector_field": "@{outputs('Resolve_vector_field')}"
+                              "input": "@{outputs('Normalize_query')}"
                             }
                           }
                         },
-                        "Return_hybrid_search": {
-                          "type": "Response",
-                          "kind": "Http",
-                          "inputs": {
-                            "statusCode": "@outputs('Call_hybrid_search')?['statusCode']",
-                            "headers": {
-                              "Content-Type": "application/json"
+                        "Use_hybrid_embedding_or_fallback": {
+                          "type": "If",
+                          "expression": "@and(equals(outputs('Create_hybrid_query_embedding')?['statusCode'], 200), not(empty(body('Create_hybrid_query_embedding')?['data']?[0]?['embedding'])))",
+                          "actions": {
+                            "Call_hybrid_search_with_embedding": {
+                              "type": "Http",
+                              "inputs": {
+                                "method": "POST",
+                                "uri": "@{appsetting('CONTAINER_APP_BASE_URL')}/api/search/hybrid/vector",
+                                "headers": {
+                                  "Content-Type": "application/json"
+                                },
+                                "body": {
+                                  "query": "@{outputs('Normalize_query')}",
+                                  "top": "@outputs('Resolve_top')",
+                                  "vector_field": "@{outputs('Resolve_vector_field')}",
+                                  "query_vector": "@body('Create_hybrid_query_embedding')?['data']?[0]?['embedding']"
+                                }
+                              }
                             },
-                            "body": "@body('Call_hybrid_search')"
+                            "Return_hybrid_search": {
+                              "type": "Response",
+                              "kind": "Http",
+                              "inputs": {
+                                "statusCode": "@outputs('Call_hybrid_search_with_embedding')?['statusCode']",
+                                "headers": {
+                                  "Content-Type": "application/json",
+                                  "x-docpipeline-search-mode": "hybrid"
+                                },
+                                "body": "@body('Call_hybrid_search_with_embedding')"
+                              },
+                              "runAfter": {
+                                "Call_hybrid_search_with_embedding": [
+                                  "Succeeded",
+                                  "Failed",
+                                  "TimedOut"
+                                ]
+                              }
+                            }
+                          },
+                          "else": {
+                            "actions": {
+                              "Call_hybrid_fallback_full_text": {
+                                "type": "Http",
+                                "inputs": {
+                                  "method": "POST",
+                                  "uri": "@{appsetting('CONTAINER_APP_BASE_URL')}/api/search/full-text",
+                                  "headers": {
+                                    "Content-Type": "application/json"
+                                  },
+                                  "body": {
+                                    "query": "@{outputs('Normalize_query')}",
+                                    "top": "@outputs('Resolve_top')"
+                                  }
+                                }
+                              },
+                              "Return_hybrid_fallback_full_text": {
+                                "type": "Response",
+                                "kind": "Http",
+                                "inputs": {
+                                  "statusCode": "@outputs('Call_hybrid_fallback_full_text')?['statusCode']",
+                                  "headers": {
+                                    "Content-Type": "application/json",
+                                    "x-docpipeline-search-mode": "full-text-fallback",
+                                    "x-docpipeline-fallback-reason": "embedding-unavailable"
+                                  },
+                                  "body": "@body('Call_hybrid_fallback_full_text')"
+                                },
+                                "runAfter": {
+                                  "Call_hybrid_fallback_full_text": [
+                                    "Succeeded",
+                                    "Failed",
+                                    "TimedOut"
+                                  ]
+                                }
+                              }
+                            }
                           },
                           "runAfter": {
-                            "Call_hybrid_search": [
+                            "Create_hybrid_query_embedding": [
                               "Succeeded",
                               "Failed",
                               "TimedOut"

@@ -18,7 +18,7 @@ terraform apply
 | Resource | Name Pattern | Purpose |
 |----------|-------------|---------|
 | Resource Group | `rg-{project}-{env}-{suffix}` | Contains everything |
-| Virtual Network | `vnet-{project}-{env}-{suffix}` | Network isolation (3 subnets) |
+| Virtual Network | `vnet-{project}-{env}-{suffix}` | Network isolation (4 subnets, including Logic App regional VNet integration) |
 | Storage Account | `st{project}{suffix}` | Blob storage (4 containers) |
 | Cosmos DB | `cosmos-{project}-{env}-{suffix}` | Job tracking + results + vector/full-text/hybrid search |
 | Azure OpenAI | `oai-{project}-{env}-{suffix}` | GPT-5.1 + text-embedding-3-small |
@@ -85,6 +85,8 @@ Terraform creates the Logic App Standard shell. Deploy the workflow source from 
   -ResourceGroupName (terraform output -raw resource_group_name) `
   -LogicAppName (terraform output -raw logic_app_name)
 ```
+
+The workflow calls Azure OpenAI embeddings with the Logic App system-assigned managed identity, then calls the Container App precomputed-vector search endpoints. If embedding generation fails, it falls back to full-text search. Terraform configures the required Logic App app settings, regional VNet integration for private endpoint access, and `Cognitive Services OpenAI User` assignment, but the Standard workflow files are still deployed with the zip-deploy script above.
 
 ## File Reference
 

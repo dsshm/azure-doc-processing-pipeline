@@ -34,6 +34,7 @@ resource "azurerm_logic_app_standard" "search" {
   storage_account_access_key = azurerm_storage_account.logic_app.primary_access_key
   version                    = "~4"
   https_only                 = true
+  virtual_network_subnet_id  = azurerm_subnet.logic_app_integration.id
   tags                       = local.common_tags
 
   identity {
@@ -43,9 +44,13 @@ resource "azurerm_logic_app_standard" "search" {
   app_settings = {
     FUNCTIONS_WORKER_RUNTIME                         = "dotnet"
     APP_KIND                                         = "workflowApp"
+    WEBSITE_VNET_ROUTE_ALL                           = "1"
     AzureFunctionsJobHost__extensionBundle__id      = "Microsoft.Azure.Functions.ExtensionBundle.Workflows"
     AzureFunctionsJobHost__extensionBundle__version = "[1.*, 2.0.0)"
     CONTAINER_APP_BASE_URL                           = "https://${azurerm_container_app.main.ingress[0].fqdn}"
+    AZURE_OPENAI_ENDPOINT                            = azurerm_cognitive_account.openai.endpoint
+    AZURE_OPENAI_EMBEDDING_MODEL                     = var.embedding_model_name
+    AZURE_OPENAI_EMBEDDING_API_VERSION               = var.openai_embedding_api_version
     SEARCH_DEFAULT_TOP                               = tostring(var.search_default_top)
     SEARCH_MAX_TOP                                   = tostring(var.search_max_top)
     SEARCH_DEFAULT_VECTOR_FIELD                      = "summary_vector"

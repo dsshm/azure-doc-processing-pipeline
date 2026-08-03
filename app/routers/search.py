@@ -37,6 +37,14 @@ class HybridSearchRequest(BaseModel):
     top: int | None = Field(default=None, ge=1)
 
 
+class VectorSearchWithVectorRequest(SearchRequest):
+    query_vector: list[float] = Field(..., min_length=1, description="Precomputed embedding vector for the query.")
+
+
+class HybridSearchWithVectorRequest(HybridSearchRequest):
+    query_vector: list[float] = Field(..., min_length=1, description="Precomputed embedding vector for the query.")
+
+
 def _resolve_top(requested_top: int | None) -> int:
     top = settings.search_default_top if requested_top is None else requested_top
     if top > settings.search_max_top:
@@ -76,6 +84,26 @@ async def search_documents(request: Request, body: SearchRequest):
     return {"count": len(results), "results": results}
 
 
+@router.post("/vector")
+async def search_documents_with_vector(request: Request, body: VectorSearchWithVectorRequest):
+    """Search documents by vector similarity using a caller-supplied query embedding."""
+    cosmos = request.app.state.cosmos
+
+    if body.vector_field not in ("summary_vector", "purpose_vector"):
+        raise HTTPException(status_code=400, detail="vector_field must be 'summary_vector' or 'purpose_vector'")
+
+    _validate_query(body.query)
+    top = _resolve_top(body.top)
+
+    results = cosmos.vector_search(
+        query_vector=body.query_vector,
+        vector_field=body.vector_field,
+        top=top,
+        filters=body.filter,
+    )
+    return {"count": len(results), "results": results, "vector_source": "provided"}
+
+
 @router.post("/full-text")
 async def search_full_text(request: Request, body: FullTextSearchRequest):
     """Search documents by Cosmos DB full-text BM25 scoring."""
@@ -88,6 +116,26 @@ async def search_full_text(request: Request, body: FullTextSearchRequest):
         top=top,
     )
     return {"count": len(results), "results": results}
+
+
+@router.post("/hybrid/vector")
+async def search_hybrid_with_vector(request: Request, body: HybridSearchWithVectorRequest):
+    """Search by hybrid vector/full-text ranking using a caller-supplied query embedding."""
+    cosmos = request.app.state.cosmos
+
+    if body.vector_field not in ("summary_vector", "purpose_vector"):
+        raise HTTPException(status_code=400, detail="vector_field must be 'summary_vector' or 'purpose_vector'")
+
+    query_text = _validate_query(body.query)
+    top = _resolve_top(body.top)
+
+    results = cosmos.hybrid_search(
+        query_text=query_text,
+        query_vector=body.query_vector,
+        vector_field=body.vector_field,
+        top=top,
+    )
+    return {"count": len(results), "results": results, "vector_source": "provided"}
 
 
 @router.post("/hybrid")

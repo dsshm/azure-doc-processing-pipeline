@@ -26,6 +26,9 @@ param privateEndpointsSubnetCidr string
 @description('CIDR for the AI services subnet.')
 param aiServicesSubnetCidr string
 
+@description('CIDR for the Logic App Standard regional VNet integration subnet.')
+param logicAppIntegrationSubnetCidr string
+
 @description('Azure OpenAI chat model deployment name.')
 param openaiModelName string
 
@@ -183,6 +186,12 @@ resource aiServicesNsg 'Microsoft.Network/networkSecurityGroups@2024-07-01' = {
   tags: tags
 }
 
+resource logicAppIntegrationNsg 'Microsoft.Network/networkSecurityGroups@2024-07-01' = {
+  name: 'nsg-logic-app-integration-${nameSuffix}'
+  location: location
+  tags: tags
+}
+
 resource vnet 'Microsoft.Network/virtualNetworks@2024-07-01' = {
   name: 'vnet-${namePrefix}-${nameSuffix}'
   location: location
@@ -235,12 +244,31 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-07-01' = {
           }
         }
       }
+      {
+        name: 'snet-logic-app-integration'
+        properties: {
+          addressPrefix: logicAppIntegrationSubnetCidr
+          defaultOutboundAccess: false
+          networkSecurityGroup: {
+            id: logicAppIntegrationNsg.id
+          }
+          delegations: [
+            {
+              name: 'logic-app-integration-delegation'
+              properties: {
+                serviceName: 'Microsoft.Web/serverFarms'
+              }
+            }
+          ]
+        }
+      }
     ]
   }
 }
 
 var containerAppsSubnetId = '${vnet.id}/subnets/snet-container-apps'
 var privateEndpointsSubnetId = '${vnet.id}/subnets/snet-private-endpoints'
+var logicAppIntegrationSubnetId = '${vnet.id}/subnets/snet-logic-app-integration'
 
 resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2025-02-01' = {
   name: 'law-${namePrefix}-${nameSuffix}'
@@ -830,9 +858,11 @@ resource logicApp 'Microsoft.Web/sites@2024-11-01' = {
     serverFarmId: logicAppPlan.id
     httpsOnly: true
     publicNetworkAccess: 'Enabled'
+    virtualNetworkSubnetId: logicAppIntegrationSubnetId
     siteConfig: {
       minTlsVersion: '1.2'
       ftpsState: 'Disabled'
+      vnetRouteAllEnabled: true
       appSettings: [
         {
           name: 'AzureWebJobsStorage'
@@ -859,6 +889,10 @@ resource logicApp 'Microsoft.Web/sites@2024-11-01' = {
           value: 'workflowApp'
         }
         {
+          name: 'WEBSITE_VNET_ROUTE_ALL'
+          value: '1'
+        }
+        {
           name: 'AzureFunctionsJobHost__extensionBundle__id'
           value: 'Microsoft.Azure.Functions.ExtensionBundle.Workflows'
         }
@@ -869,6 +903,18 @@ resource logicApp 'Microsoft.Web/sites@2024-11-01' = {
         {
           name: 'CONTAINER_APP_BASE_URL'
           value: 'https://${containerApp.properties.configuration.ingress.fqdn}'
+        }
+        {
+          name: 'AZURE_OPENAI_ENDPOINT'
+          value: openai.properties.endpoint
+        }
+        {
+          name: 'AZURE_OPENAI_EMBEDDING_MODEL'
+          value: embeddingModelName
+        }
+        {
+          name: 'AZURE_OPENAI_EMBEDDING_API_VERSION'
+          value: openaiEmbeddingApiVersion
         }
         {
           name: 'SEARCH_DEFAULT_TOP'
@@ -983,6 +1029,16 @@ resource caOpenAIUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: openai
   properties: {
     principalId: containerApp.identity.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: roleCognitiveServicesOpenAIUser
+  }
+}
+
+resource logicAppOpenAIUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(openai.id, logicApp.id, roleCognitiveServicesOpenAIUser)
+  scope: openai
+  properties: {
+    principalId: logicApp.identity.principalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: roleCognitiveServicesOpenAIUser
   }
