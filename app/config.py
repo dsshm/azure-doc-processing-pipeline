@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     storage_container_processing: str = Field(default="processing")
     storage_container_completed: str = Field(default="completed")
     storage_container_original: str = Field(default="originaldocument")
+    storage_container_failed: str = Field(default="failed")
 
     # --- Azure Cosmos DB ---
     cosmos_endpoint: str = Field(..., description="Cosmos DB account endpoint")
@@ -46,6 +47,8 @@ class Settings(BaseSettings):
     search_max_top: int = Field(default=1000, description="Maximum accepted search result count")
     backfill_default_limit: int = Field(default=25, description="Default search index backfill batch size")
     backfill_max_limit: int = Field(default=200, description="Maximum search index backfill batch size")
+    reprocess_default_limit: int = Field(default=100, description="Default ingest reprocess batch size")
+    reprocess_max_limit: int = Field(default=5000, description="Maximum ingest reprocess batch size")
     max_concurrent_jobs: int = Field(default=5, description="Max parallel processing jobs")
     log_level: str = Field(default="INFO")
     port: int = Field(default=8000)
@@ -66,6 +69,12 @@ class Settings(BaseSettings):
             raise ValueError("BACKFILL_MAX_LIMIT must be at least 1.")
         if self.backfill_default_limit > self.backfill_max_limit:
             raise ValueError("BACKFILL_DEFAULT_LIMIT cannot exceed BACKFILL_MAX_LIMIT.")
+        if self.reprocess_default_limit < 1:
+            raise ValueError("REPROCESS_DEFAULT_LIMIT must be at least 1.")
+        if self.reprocess_max_limit < 1:
+            raise ValueError("REPROCESS_MAX_LIMIT must be at least 1.")
+        if self.reprocess_default_limit > self.reprocess_max_limit:
+            raise ValueError("REPROCESS_DEFAULT_LIMIT cannot exceed REPROCESS_MAX_LIMIT.")
         return self
 
 

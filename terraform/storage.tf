@@ -57,3 +57,9 @@ resource "azurerm_storage_container" "originaldocument" {
   storage_account_id   = azurerm_storage_account.main.id
   container_access_type = "private"
 }
+
+resource "azurerm_storage_container" "failed" {
+  name                 = "failed"
+  storage_account_id   = azurerm_storage_account.main.id
+  container_access_type = "private"
+}

@@ -23,6 +23,7 @@ from app.plugins.llm_plugin import LLMPlugin
 from app.plugins.maps_plugin import AzureMapsPlugin
 from app.agents.planner import PipelineOrchestrator
 from app.services.processing import ProcessingWorker
+from app.services.reprocessing import IngestReprocessService
 from app.services.search_backfill import SearchIndexBackfillService
 from app.routers import admin, events, status, documents, search
 
@@ -43,6 +44,7 @@ async def lifespan(app: FastAPI):
     orchestrator = PipelineOrchestrator(blob=blob, cosmos=cosmos, llm=llm, maps=maps)
     worker = ProcessingWorker(orchestrator=orchestrator)
     search_backfill = SearchIndexBackfillService(cosmos=cosmos, llm=llm, maps=maps)
+    ingest_reprocess = IngestReprocessService(blob=blob, cosmos=cosmos, worker=worker)
 
     # Attach to app state so routers can access them
     app.state.blob = blob
@@ -51,6 +53,7 @@ async def lifespan(app: FastAPI):
     app.state.maps = maps
     app.state.worker = worker
     app.state.search_backfill = search_backfill
+    app.state.ingest_reprocess = ingest_reprocess
 
     # Start background worker
     worker_task = asyncio.create_task(worker.start())

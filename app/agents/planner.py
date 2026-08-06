@@ -10,6 +10,7 @@ chat-based agent negotiation — the pipeline steps are fixed:
   5. Build full-text search content and vector embeddings
   6. Save result JSON to COMPLETED container + Cosmos DB
   7. Move original from PROCESSING → ORIGINALDOCUMENT
+  8. On failure, move the source blob from INGEST/PROCESSING → FAILED
 """
 
 from __future__ import annotations
@@ -18,6 +19,8 @@ import json
 import logging
 import os
 from typing import Any
+
+from azure.core.exceptions import AzureError
 
 from app.config import settings
 from app.models.processing import JobStatus, ProcessingJob
@@ -69,9 +72,15 @@ class PipelineOrchestrator:
             ):
                 logger.info("Blob already in processing container (retry), skipping move")
             else:
+                source_container = job.container or settings.storage_container_ingest
                 self.blob.move_blob(
-                    source_container=settings.storage_container_ingest,
+                    source_container=source_container,
                     dest_container=settings.storage_container_processing,
+                    blob_name=job.blob_name,
+                )
+                job.container = settings.storage_container_processing
+                job.blob_url = self.blob.get_blob_url(
+                    container=settings.storage_container_processing,
                     blob_name=job.blob_name,
                 )
             step.complete()
@@ -168,6 +177,11 @@ class PipelineOrchestrator:
                 dest_container=settings.storage_container_original,
                 blob_name=job.blob_name,
             )
+            job.container = settings.storage_container_original
+            job.blob_url = self.blob.get_blob_url(
+                container=settings.storage_container_original,
+                blob_name=job.blob_name,
+            )
             step.complete()
 
             job.complete()
@@ -182,8 +196,52 @@ class PipelineOrchestrator:
                 if s.status.value == "running":
                     s.fail(str(exc))
             job.fail(str(exc))
+            self._move_failed_blob(job)
             try:
                 self.cosmos.update_job(job)
             except Exception:
                 logger.error("Failed to persist job failure state for %s", job.id)
             return job
+
+    def _move_failed_blob(self, job: ProcessingJob) -> None:
+        step = job.get_step("move_to_failed")
+        step.start()
+
+        try:
+            if self.blob.blob_exists(settings.storage_container_processing, job.blob_name):
+                source_container = settings.storage_container_processing
+            elif self.blob.blob_exists(settings.storage_container_ingest, job.blob_name):
+                source_container = settings.storage_container_ingest
+            elif self.blob.blob_exists(settings.storage_container_failed, job.blob_name):
+                message = "Blob is already in the failed container."
+                logger.info("%s job=%s blob=%s", message, job.id, job.blob_name)
+                job.container = settings.storage_container_failed
+                job.blob_url = self.blob.get_blob_url(
+                    container=settings.storage_container_failed,
+                    blob_name=job.blob_name,
+                )
+                step.skip(message)
+                return
+            else:
+                message = (
+                    "Blob was not found in processing, ingest, or failed during failure cleanup; "
+                    "it may already have been archived or manually moved."
+                )
+                logger.warning("%s job=%s blob=%s", message, job.id, job.blob_name)
+                step.skip(message)
+                return
+
+            self.blob.move_blob(
+                source_container=source_container,
+                dest_container=settings.storage_container_failed,
+                blob_name=job.blob_name,
+            )
+            job.container = settings.storage_container_failed
+            job.blob_url = self.blob.get_blob_url(
+                container=settings.storage_container_failed,
+                blob_name=job.blob_name,
+            )
+            step.complete()
+        except (AzureError, ValueError) as move_exc:
+            logger.exception("Failed to move blob to failed container for job %s", job.id)
+            step.fail(str(move_exc))

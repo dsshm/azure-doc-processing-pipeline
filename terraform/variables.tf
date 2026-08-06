@@ -176,6 +176,18 @@ variable "backfill_max_limit" {
   default     = 200
 }
 
+variable "reprocess_default_limit" {
+  description = "Default number of ingest blobs scanned by each requeue batch"
+  type        = number
+  default     = 100
+}
+
+variable "reprocess_max_limit" {
+  description = "Maximum number of ingest blobs accepted by each requeue batch"
+  type        = number
+  default     = 5000
+}
+
 variable "logic_app_sku_name" {
   description = "Logic App Standard Workflow Service Plan SKU"
   type        = string

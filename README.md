@@ -13,7 +13,7 @@ An event-driven document processing pipeline running as a **FastAPI Container Ap
    - **Geocode extracted locations** using **Azure Maps Fuzzy Search** and attach latitude/longitude results to `key_fields.entities.geocoded_locations`.
    - **Build search content and vector embeddings** using **Azure OpenAI text-embedding-3-small** (1536-dimensional). The result-level search text includes extracted entities, addresses, and geocoded coordinates so Cosmos DB full-text and hybrid search can find addresses, buildings, cities, and related document context.
    - **Store** structured results and embeddings in **Azure Cosmos DB** (NoSQL, serverless) with vector indexes for semantic search.
-4. The original document is archived to the `originaldocument` container.
+4. The original document is archived to the `originaldocument` container. If processing fails, the source blob is moved to the `failed` container so it does not sit in `ingest` forever.
 5. Users can monitor jobs on the **status dashboard**, search documents via the Container App API or **Logic App Standard** facade, and download original files via SAS-protected URLs.
 
 ### Azure services used
@@ -21,7 +21,7 @@ An event-driven document processing pipeline running as a **FastAPI Container Ap
 | Service | Role |
 |---------|------|
 | **Azure Container Apps** | Hosts the FastAPI application (Uvicorn, 2 workers, VNet-integrated) |
-| **Azure Blob Storage** | Document lifecycle — `ingest`, `processing`, `completed`, `originaldocument` containers |
+| **Azure Blob Storage** | Document lifecycle — `ingest`, `processing`, `completed`, `originaldocument`, `failed` containers |
 | **Azure Event Grid** | Triggers processing on blob upload (`BlobCreated` system topic) |
 | **Azure Document Intelligence** | OCR / layout extraction from 13+ file types |
 | **Azure OpenAI Service** | GPT-5.1 for analysis; text-embedding-3-small for vector embeddings |
@@ -39,7 +39,7 @@ An event-driven document processing pipeline running as a **FastAPI Container Ap
 - **Search text + vector embeddings** — result-level `search_text`, summary/search-text vector, purpose vector, and chunk-level vectors (text-embedding-3-small, 1536 dimensions)
 - **Location geocoding** — extracted `locations` entities are enriched with Azure Maps latitude/longitude pins
 - **Cosmos DB full-text, vector, and hybrid search** — BM25 full-text ranking and RRF hybrid ranking with `VectorDistance()`
-- **Status dashboard** — real-time job monitoring, retry failed jobs, delete jobs
+- **Status dashboard** — real-time job monitoring with continuation-token paging and real total/status counts, bulk requeue of missed ingest blobs, retry failed jobs, delete jobs
 - **Managed identity first** — service-to-service access uses RBAC; the Logic App HTTP trigger is invoked with a key-protected callback URL for simple clients
 - **Entra ID Easy Auth** — all endpoints (except webhooks and health) require AAD login
 
@@ -56,6 +56,8 @@ The pipeline accepts any file type supported by the Azure Document Intelligence 
 | Plain Text | `.txt` | Direct text ingestion |
 | Images | `.jpg`, `.jpeg`, `.png`, `.bmp`, `.tiff`, `.tif`, `.gif` | OCR-based text extraction |
 
+Image files such as TIFF and JPEG are expected to work through Azure Document Intelligence `prebuilt-layout`. They are still subject to Document Intelligence service limits, image quality, page count/size limits, and OCR accuracy. Multi-page TIFF should be tested with representative customer files before promising throughput or extraction quality at scale.
+
 ## API Endpoints
 
 | Method | Path | Description |
@@ -63,7 +65,8 @@ The pipeline accepts any file type supported by the Azure Document Intelligence 
 | `GET` | `/` | Dashboard (redirect to status UI) |
 | `GET` | `/health` | Health check |
 | `POST` | `/api/events/blob` | Event Grid webhook (BlobCreated) |
-| `GET` | `/api/status` | List jobs (`?status=queued\|processing\|completed\|failed`, `?limit=`) |
+| `GET` | `/api/status` | List one page of jobs (`?status=queued\|processing\|completed\|failed`, `?limit=`, `?continuation_token=`) |
+| `GET` | `/api/status/summary` | Get total job/document count and counts by status without loading job documents |
 | `GET` | `/api/status/{job_id}` | Job detail with processing steps |
 | `POST` | `/api/status/{job_id}/retry` | Re-queue a failed job |
 | `DELETE` | `/api/status/{job_id}` | Delete job and its results |
@@ -76,6 +79,7 @@ The pipeline accepts any file type supported by the Azure Document Intelligence 
 | `POST` | `/api/search/hybrid` | Cosmos DB hybrid search with vector + full-text RRF ranking; results must also match full text (`{query, vector_field, top}`) |
 | `POST` | `/api/search/hybrid/vector` | Cosmos DB hybrid search with a caller-supplied query embedding (`{query, query_vector, vector_field, top}`) |
 | `POST` | `/api/search/chunks` | Chunk-level vector search (`{query, top}`) |
+| `POST` | `/api/admin/ingest/reprocess` | Dry-run or enqueue a bounded batch of blobs from `ingest` or `failed` (`{dry_run, limit, prefix, source_container}`) |
 | `POST` | `/api/admin/search-index/backfill` | Dry-run or execute a bounded batch backfill for existing Cosmos results (`{dry_run, limit, force, include_geocoding, include_chunks}`) |
 | `POST` | `/api/admin/search-index/backfill/{job_id}` | Dry-run or execute backfill for one result document |
 
@@ -117,6 +121,26 @@ az deployment sub create \
 Use `bicep/main.example.bicepparam` as a starting template. Keep environment-specific parameter files local, for example `bicep/local.main.bicepparam`.
 
 For public-internet Storage portal/blob access, add client/admin IPs to `allowedIpAddresses`; these IPs are applied to the Storage firewall and Network Security Perimeter rules. For public-internet Cosmos DB data reads that do not need Storage access, add IPs to `cosmosAllowedIpAddresses`; these IPs are applied only to the Cosmos DB account firewall.
+
+Storage BlobCreated automation is deployed as an Event Grid system topic plus the `sub-blob-created` subscription. The Storage account must remain a `StorageV2` account with public network access enabled for selected networks and `AzureServices` firewall bypass enabled so Event Grid can create and publish from the Storage source. The Bicep template sets those requirements explicitly and gives the Event Grid system topic a system-assigned managed identity for NSP-secured Storage scenarios. When `manageEventGridSubscription = true`, Bicep uses nested deployments to stage the Storage NSP association through Learning mode, create/update the Event Grid resources, and then restore the Storage NSP association to Enforced mode. For later redeploys when the subscription already exists and no Event Grid update is needed, set `manageEventGridSubscription = false`; the template skips the Learning stage and keeps the Storage association Enforced.
+
+If a deployment is interrupted between stages, manually restore the Storage NSP association to the expected access mode:
+
+```bash
+# Move back to Learning only if you need to rerun Event Grid creation/update.
+az network perimeter association update \
+  --resource-group <resource_group> \
+  --perimeter-name nsp-<project>-<environment>-<suffix> \
+  --name assoc-storage \
+  --access-mode Learning
+
+# Restore the final secured state after Event Grid exists.
+az network perimeter association update \
+  --resource-group <resource_group> \
+  --perimeter-name nsp-<project>-<environment>-<suffix> \
+  --name assoc-storage \
+  --access-mode Enforced
+```
 
 The Bicep deployment also provisions a **Logic App Standard** resource on a Workflow Standard plan (`WS1` by default). Deploy the workflow code after the infrastructure finishes:
 
@@ -313,6 +337,22 @@ With only the New York and Beverly Hills test PDFs indexed, `nashville` should r
 
 For full-text-only testing, use `-Mode FullText`; that path does not call Azure OpenAI. Vector, hybrid, and chunk modes require the caller to have `Cognitive Services OpenAI User` on the Azure OpenAI account and network access to the Azure OpenAI endpoint. The script uses `-EmbeddingApiVersion 2024-12-01-preview` by default for `text-embedding-3-small`; `-OpenAIApiVersion` remains as a backward-compatible alias. Install local script dependencies with `pip install -r requirements.txt` if `azure-cosmos` or `azure-identity` is missing. Cosmos full-text/hybrid search requires the newer Cosmos SDK pipeline, so use `azure-cosmos` 4.16.3 or later.
 
+### Inspect Azure OpenAI deployment throughput and regional quota
+
+Use `scripts\Get-AzureOpenAIModelThroughput.ps1` to inspect Azure OpenAI model deployment capacity and Cognitive Services regional usage/quota from Azure CLI/ARM. This avoids the portal path that redirects AOAI account management into Foundry.
+
+```powershell
+az login
+az account set --subscription <subscription_id>
+
+.\scripts\Get-AzureOpenAIModelThroughput.ps1 `
+  -SubscriptionId <subscription_id> `
+  -ResourceGroupName <resource_group_name> `
+  -AccountName <openai_account_name>
+```
+
+The script reports each deployment's model, SKU, raw capacity units, and an estimated allocated TPM for Standard/GlobalStandard deployments (`capacity * 1000`). It also prints regional usage/quota rows exposed by `Microsoft.CognitiveServices`; use `-RawJson` when you need the unformatted evidence for a customer handoff.
+
 ## Environment Variables
 
 All configuration is via environment variables. **No API keys** — the app uses `DefaultAzureCredential` (managed identity in Azure, `az login` locally).
@@ -335,10 +375,13 @@ All configuration is via environment variables. **No API keys** — the app uses
 | `AZURE_OPENAI_EMBEDDING_MODEL` | No | `text-embedding-3-small` | Embedding model deployment |
 | `AZURE_OPENAI_EMBEDDING_API_VERSION` | No | `2024-12-01-preview` | Embeddings API version |
 | `COSMOS_DATABASE_NAME` | No | `docprocessing` | Cosmos DB database name |
+| `STORAGE_CONTAINER_FAILED` | No | `failed` | Blob container used for failed/unsupported source files |
 | `SEARCH_DEFAULT_TOP` | No | `30` | Default result count when search requests omit `top` |
 | `SEARCH_MAX_TOP` | No | `1000` | Maximum `top` accepted by search endpoints |
 | `BACKFILL_DEFAULT_LIMIT` | No | `25` | Default number of result documents scanned per search-index backfill batch |
 | `BACKFILL_MAX_LIMIT` | No | `200` | Maximum backfill batch size accepted by the admin endpoint |
+| `REPROCESS_DEFAULT_LIMIT` | No | `100` | Default number of ingest blobs scanned per requeue batch |
+| `REPROCESS_MAX_LIMIT` | No | `5000` | Maximum ingest requeue batch size accepted by the admin endpoint |
 | `MAX_CONCURRENT_JOBS` | No | `5` | Max parallel processing jobs |
 | `LOG_LEVEL` | No | `INFO` | Logging level |
 | `AZURE_TENANT_ID` | No | — | For local dev if auto-detect fails |
@@ -362,12 +405,15 @@ All configuration is via environment variables. **No API keys** — the app uses
 │   │   ├── llm_plugin.py         # Azure OpenAI analysis + embeddings
 │   │   └── maps_plugin.py        # Azure Maps fuzzy-search geocoding
 │   ├── routers/                  # API endpoint handlers
+│   │   ├── admin.py              # Requeue/backfill maintenance APIs
 │   │   ├── events.py             # Event Grid webhook
 │   │   ├── status.py             # Job list / detail / retry / delete
 │   │   ├── documents.py          # Analysis results + original download
 │   │   └── search.py             # Vector similarity search
 │   ├── services/
-│   │   └── processing.py         # Background async worker (asyncio.Queue)
+│   │   ├── processing.py         # Background async worker (asyncio.Queue)
+│   │   ├── reprocessing.py       # Bounded ingest/failed-container requeue service
+│   │   └── search_backfill.py    # Stored-result search/geocode/vector backfill
 │   └── web/static/
 │       └── index.html            # Status dashboard (single-page HTML)
 ├── terraform/                    # Existing Terraform Infrastructure as Code
@@ -391,6 +437,9 @@ All configuration is via environment variables. **No API keys** — the app uses
 | `processing` | Working area — files moved here during pipeline execution |
 | `completed` | Results — JSON analysis output stored as `{job_id}/{filename}.json` |
 | `originaldocument` | Archive — original files moved here after successful processing |
+| `failed` | Failure quarantine — source files moved here after failed processing or unsupported extensions |
+
+Failed-job retry moves the source blob from `failed` back to `processing` before queueing the job. This avoids creating a second Event Grid event while allowing the normal pipeline to resume from the processing container.
 
 ## Cosmos DB Collections
 
@@ -415,7 +464,37 @@ The `results` container has a full-text policy and full-text index on:
 
 Hybrid search requires `FullTextContainsAny(c.search_text, ...)` before applying RRF over `VectorDistance()` and `FullTextScore()`. This keeps location searches precise: if only New York and Beverly Hills address documents are indexed, searching for `nashville` returns no full-text or hybrid hits instead of returning the nearest unrelated vector. Existing items processed before `search_text` was introduced need a backfill/reprocess before they appear in full-text or hybrid search results.
 
-### Search-index backfill / reprocess
+### Ingest requeue for missed Event Grid events
+
+If files remain in the `ingest` container because Event Grid missed `BlobCreated` events or a previous deployment was unhealthy, use the dashboard **Ingest Requeue** card or call the admin API directly. The same endpoint can also scan the `failed` container for files manually staged there for another processing attempt. It scans a bounded batch of existing source blobs, skips blobs that already have active queued/processing jobs, creates normal processing jobs for the rest, and lets the existing worker move each blob through the standard lifecycle.
+
+Run a dry-run first:
+
+```powershell
+Invoke-RestMethod `
+  -Method Post `
+  -Uri "$containerAppUrl/api/admin/ingest/reprocess" `
+  -ContentType 'application/json' `
+  -Body '{"dry_run":true,"limit":100,"prefix":"","source_container":"ingest"}'
+```
+
+Queue a bounded batch from `ingest`:
+
+```powershell
+Invoke-RestMethod `
+  -Method Post `
+  -Uri "$containerAppUrl/api/admin/ingest/reprocess" `
+  -ContentType 'application/json' `
+  -Body '{"dry_run":false,"limit":100,"prefix":"","source_container":"ingest"}'
+```
+
+To requeue files that are only in `failed`, use `"source_container":"failed"` with the same dry-run-then-execute flow. This is separate from job-level retry: retry an existing failed Cosmos job from the job detail page, but use failed-source requeue when files were manually uploaded or moved into `failed` without an existing job record.
+
+For millions of blobs, process in controlled batches and use `prefix` to shard the work by folder/date/name range. Run the endpoint repeatedly until `blobs_scanned` is `0` for the selected source/prefix. Keep `MAX_CONCURRENT_JOBS`, model quota, Document Intelligence limits, and Cosmos RU/serverless throttling in mind; the button queues work, but the worker still controls actual concurrency.
+
+Unsupported file extensions are still queued on execute. The pipeline fails them before Document Intelligence, records a failed job, and moves the blob to `failed` so unsupported or bad files do not remain in `ingest`.
+
+### Search-index backfill / reprocess stored results
 
 The app includes an operator-triggered backfill path for existing Cosmos results. It does not rerun Document Intelligence or LLM extraction; it rebuilds the search material that can be derived from the stored result document:
 
@@ -529,6 +608,23 @@ az monitor log-analytics query `
 
 Use the `@file` form with Azure CLI; passing the multi-line query through a PowerShell variable can truncate execution to the first line.
 
+Network Security Perimeter diagnostics are also sent to the same Log Analytics workspace. The Bicep deployment enables every NSP access-log category plus `AllMetrics` on the `nsp-<project>-<environment>-<suffix>` perimeter. In Transition/Learning mode, the `NSPAccessLogs` records are the place to find sources that were allowed by existing resource firewall/trusted-access behavior instead of an NSP rule. Azure does not automatically promote learned sources into an NSP ruleset.
+
+Use `queries/nsp-access-summary.kql` to summarize allowed/denied NSP access by source IP or source resource, direction, access path, matched rule, and affected service resource.
+
+```powershell
+$workspaceId = az monitor log-analytics workspace show `
+  --resource-group <resource_group_name> `
+  --workspace-name <log_analytics_workspace_name> `
+  --query customerId -o tsv
+
+az monitor log-analytics query `
+  --workspace $workspaceId `
+  --analytics-query "@queries\nsp-access-summary.kql" `
+  --timespan P1D `
+  -o table
+```
+
 ## Authentication & RBAC
 
 The Container App uses **system-assigned managed identity** with these roles:
@@ -546,6 +642,28 @@ The Container App uses **system-assigned managed identity** with these roles:
 Entra ID Easy Auth protects the web UI and API. Event Grid webhook and health endpoints are excluded from auth.
 
 The Logic App Standard HTTP trigger is protected by its callback URL signature (`sig` query string). The workflow uses its system-assigned managed identity to call Azure OpenAI embeddings and then calls the Container App search facade. The Logic App identity needs `Cognitive Services OpenAI User` on the Azure OpenAI account; it does not need Cosmos DB RBAC unless you change the workflow to query Cosmos directly.
+
+### Grant operator data access with Bicep
+
+For repeatable environment deployments, pass Microsoft Entra object IDs in `operatorPrincipalObjectIds`:
+
+```bicep
+param operatorPrincipalObjectIds = [
+  '00000000-0000-0000-0000-000000000000'
+]
+```
+
+Bicep assigns each principal:
+
+- `Reader` on the Storage account for portal metadata discovery.
+- `Storage Blob Data Contributor` on the Storage account for blob list/read/upload/delete access.
+- `Cosmos DB Built-in Data Reader` on the Cosmos DB account using Cosmos DB for NoSQL data-plane RBAC.
+- `Cosmos DB Account Reader Role` on the Cosmos DB account for portal metadata discovery.
+- `Azure Maps Search and Render Data Reader` on the Azure Maps account.
+
+This is the preferred path for known operators, groups, service principals, or managed identities. Use object IDs, not UPNs, because Bicep does not resolve Entra names. The legacy `deployerPrincipalId` parameter is still accepted and is merged into `operatorPrincipalObjectIds` for backward compatibility.
+
+RBAC only answers "who can authenticate." Public client access still also depends on the network rules. For Storage portal/blob access, add the client/admin public IP to `allowedIpAddresses`; for Cosmos-only public data-plane access, add the IP to `cosmosAllowedIpAddresses`.
 
 ### Grant Cosmos DB read access to users
 

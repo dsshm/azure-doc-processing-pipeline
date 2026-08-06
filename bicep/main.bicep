@@ -90,6 +90,12 @@ param backfillDefaultLimit int = 25
 @description('Maximum number of result documents accepted by each search-index backfill batch.')
 param backfillMaxLimit int = 200
 
+@description('Default number of ingest blobs scanned by each requeue batch.')
+param reprocessDefaultLimit int = 100
+
+@description('Maximum number of ingest blobs accepted by each requeue batch.')
+param reprocessMaxLimit int = 5000
+
 @allowed([
   'WS1'
   'WS2'
@@ -121,8 +127,11 @@ param additionalNspSubscriptionIds array = [
   '4345216c-3da4-4537-97ff-2a9f5053a420'
 ]
 
-@description('Optional deploying user/service principal object ID for Cosmos read permissions.')
+@description('Optional deploying user/service principal object ID for backward-compatible Cosmos read permissions. Prefer operatorPrincipalObjectIds for new deployments.')
 param deployerPrincipalId string = ''
+
+@description('Microsoft Entra user, group, service principal, or managed identity object IDs that should receive operator data access to Storage blobs, Cosmos DB for NoSQL read/query access, and Azure Maps search/render access.')
+param operatorPrincipalObjectIds array = []
 
 @description('Enable Container Apps Easy Auth. Requires an existing Entra app client ID and secret.')
 param enableEasyAuth bool = false
@@ -137,7 +146,7 @@ param easyAuthClientSecret string = ''
 @description('Tenant ID used for the Easy Auth OpenID issuer.')
 param easyAuthIssuerTenantId string = tenant().tenantId
 
-@description('Deploy or update the Storage BlobCreated Event Grid subscription. Set false for redeploys into an existing environment after Storage is associated with an enforced Network Security Perimeter.')
+@description('Deploy or update the Storage BlobCreated Event Grid subscription. When true, nested modules stage the Storage NSP association through Learning mode, create/update Event Grid, then restore Enforced mode. Set false for later redeploys when no Event Grid update is needed.')
 param manageEventGridSubscription bool = true
 
 @description('Tags applied to all resources.')
@@ -190,6 +199,8 @@ module documentPipeline './modules/document-pipeline.bicep' = {
     searchMaxTop: searchMaxTop
     backfillDefaultLimit: backfillDefaultLimit
     backfillMaxLimit: backfillMaxLimit
+    reprocessDefaultLimit: reprocessDefaultLimit
+    reprocessMaxLimit: reprocessMaxLimit
     logicAppSkuName: logicAppSkuName
     logicAppSkuCapacity: logicAppSkuCapacity
     cosmosThroughputMode: cosmosThroughputMode
@@ -197,6 +208,7 @@ module documentPipeline './modules/document-pipeline.bicep' = {
     cosmosAllowedIpAddresses: cosmosAllowedIpAddresses
     additionalNspSubscriptionIds: additionalNspSubscriptionIds
     deployerPrincipalId: deployerPrincipalId
+    operatorPrincipalObjectIds: operatorPrincipalObjectIds
     enableEasyAuth: enableEasyAuth
     easyAuthClientId: easyAuthClientId
     easyAuthClientSecret: easyAuthClientSecret
@@ -221,3 +233,5 @@ output logicAppName string = documentPipeline.outputs.logicAppName
 output logicAppUrl string = documentPipeline.outputs.logicAppUrl
 output easyAuthRedirectUri string = documentPipeline.outputs.easyAuthRedirectUri
 output logAnalyticsWorkspaceId string = documentPipeline.outputs.logAnalyticsWorkspaceId
+output logAnalyticsWorkspaceName string = documentPipeline.outputs.logAnalyticsWorkspaceName
+output networkSecurityPerimeterName string = documentPipeline.outputs.networkSecurityPerimeterName

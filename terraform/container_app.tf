@@ -113,6 +113,14 @@ resource "azurerm_container_app" "main" {
         value = tostring(var.backfill_max_limit)
       }
       env {
+        name  = "REPROCESS_DEFAULT_LIMIT"
+        value = tostring(var.reprocess_default_limit)
+      }
+      env {
+        name  = "REPROCESS_MAX_LIMIT"
+        value = tostring(var.reprocess_max_limit)
+      }
+      env {
         name  = "STORAGE_CONTAINER_INGEST"
         value = "ingest"
       }
@@ -127,6 +135,10 @@ resource "azurerm_container_app" "main" {
       env {
         name  = "STORAGE_CONTAINER_ORIGINAL"
         value = "originaldocument"
+      }
+      env {
+        name  = "STORAGE_CONTAINER_FAILED"
+        value = "failed"
       }
       env {
         name  = "LOG_LEVEL"

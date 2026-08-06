@@ -36,6 +36,8 @@ param searchDefaultTop = 30
 param searchMaxTop = 1000
 param backfillDefaultLimit = 25
 param backfillMaxLimit = 200
+param reprocessDefaultLimit = 100
+param reprocessMaxLimit = 5000
 param logicAppSkuName = 'WS1'
 param logicAppSkuCapacity = 1
 param cosmosThroughputMode = 'Serverless'
@@ -53,14 +55,24 @@ param additionalNspSubscriptionIds = [
   '4345216c-3da4-4537-97ff-2a9f5053a420'
 ]
 
-// Optional: set to your user/service principal object ID to grant Cosmos read permissions.
+// Optional legacy single-principal Cosmos reader value. Prefer operatorPrincipalObjectIds.
 param deployerPrincipalId = ''
+
+// Optional operator/admin principals. Use Microsoft Entra object IDs for users,
+// groups, service principals, or managed identities that should upload/read blobs,
+// query Cosmos DB data, and call Azure Maps search/render APIs.
+param operatorPrincipalObjectIds = [
+  // '00000000-0000-0000-0000-000000000000'
+]
 
 // Bicep cannot emit a new Entra app client secret. Create/provide an app registration if Easy Auth is required.
 param enableEasyAuth = false
 param easyAuthClientId = ''
 param easyAuthClientSecret = ''
 
+// For first deploy or Event Grid changes, keep true. Bicep stages the Storage
+// NSP association through Learning -> Event Grid -> Enforced using nested modules.
+// Set false on later redeploys when no Event Grid update is needed.
 param manageEventGridSubscription = true
 
 param tags = {

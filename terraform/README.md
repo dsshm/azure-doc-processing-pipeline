@@ -19,7 +19,7 @@ terraform apply
 |----------|-------------|---------|
 | Resource Group | `rg-{project}-{env}-{suffix}` | Contains everything |
 | Virtual Network | `vnet-{project}-{env}-{suffix}` | Network isolation (4 subnets, including Logic App regional VNet integration) |
-| Storage Account | `st{project}{suffix}` | Blob storage (4 containers) |
+| Storage Account | `st{project}{suffix}` | Blob storage (5 containers: ingest, processing, completed, originaldocument, failed) |
 | Cosmos DB | `cosmos-{project}-{env}-{suffix}` | Job tracking + results + vector/full-text/hybrid search |
 | Azure OpenAI | `oai-{project}-{env}-{suffix}` | GPT-5.1 + text-embedding-3-small |
 | Document Intelligence | `di-{project}-{env}-{suffix}` | Document extraction |
@@ -46,7 +46,7 @@ All variables have defaults. At minimum, review these in `terraform.tfvars`:
 | `environment` | `dev` | Environment suffix |
 | `tags` | `{}` | Tags for all resources |
 
-See [variables.tf](variables.tf) for the full list including VNet CIDRs, model versions, search result limits, search-index backfill batch limits, container sizing, and Cosmos throughput mode.
+See [variables.tf](variables.tf) for the full list including VNet CIDRs, model versions, search result limits, search-index backfill/requeue batch limits, container sizing, and Cosmos throughput mode.
 
 ## Post-Deployment
 
@@ -97,7 +97,7 @@ The workflow calls Azure OpenAI embeddings with the Logic App system-assigned ma
 | `variables.tf` | All input variables |
 | `outputs.tf` | Useful output values |
 | `network.tf` | VNet, subnets, NSGs |
-| `storage.tf` | Storage account + 4 blob containers |
+| `storage.tf` | Storage account + 5 blob containers |
 | `cosmos.tf` | Cosmos DB account, database, containers, vector policies |
 | `ai_services.tf` | Azure OpenAI + Document Intelligence + model deployments |
 | `acr.tf` | Container Registry |

@@ -45,6 +45,23 @@ class ProcessingStep(BaseModel):
         self.completed_at = datetime.now(timezone.utc)
         self.error = error
 
+    def skip(self, reason: str | None = None) -> None:
+        self.status = StepStatus.SKIPPED
+        self.completed_at = datetime.now(timezone.utc)
+        self.error = reason
+
+
+def default_processing_steps() -> list[ProcessingStep]:
+    return [
+        ProcessingStep(name="move_to_processing"),
+        ProcessingStep(name="document_extraction"),
+        ProcessingStep(name="llm_analysis"),
+        ProcessingStep(name="geocode_locations"),
+        ProcessingStep(name="build_search_index"),
+        ProcessingStep(name="save_results"),
+        ProcessingStep(name="move_original"),
+    ]
+
 
 class ProcessingJob(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4()))
@@ -56,15 +73,7 @@ class ProcessingJob(BaseModel):
     error_message: Optional[str] = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    steps: list[ProcessingStep] = Field(default_factory=lambda: [
-        ProcessingStep(name="move_to_processing"),
-        ProcessingStep(name="document_extraction"),
-        ProcessingStep(name="llm_analysis"),
-        ProcessingStep(name="geocode_locations"),
-        ProcessingStep(name="build_search_index"),
-        ProcessingStep(name="save_results"),
-        ProcessingStep(name="move_original"),
-    ])
+    steps: list[ProcessingStep] = Field(default_factory=default_processing_steps)
 
     def touch(self) -> None:
         self.updated_at = datetime.now(timezone.utc)

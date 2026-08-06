@@ -66,6 +66,15 @@ class BlobPlugin:
         return self.download_blob(container=container, blob_name=blob_name)
 
     # ------------------------------------------------------------------
+    @kernel_function(name="get_blob_url", description="Return the URL for a blob in this storage account.")
+    def get_blob_url(
+        self,
+        container: Annotated[str, "Container name"],
+        blob_name: Annotated[str, "Blob path/name"],
+    ) -> str:
+        return self._client.get_blob_client(container=container, blob=blob_name).url
+
+    # ------------------------------------------------------------------
     @kernel_function(name="upload_blob", description="Upload data to a blob.")
     def upload_blob(
         self,
@@ -135,9 +144,18 @@ class BlobPlugin:
         self,
         container: Annotated[str, "Container name"],
         prefix: Annotated[str, "Blob name prefix filter"] = "",
+        limit: Annotated[int | None, "Maximum number of blob names to return"] = None,
     ) -> list[str]:
+        if limit is not None and limit < 1:
+            raise ValueError("limit must be at least 1 when provided")
+
         container_client = self._client.get_container_client(container)
-        return [b.name for b in container_client.list_blobs(name_starts_with=prefix or None)]
+        names: list[str] = []
+        for blob in container_client.list_blobs(name_starts_with=prefix or None):
+            names.append(blob.name)
+            if limit is not None and len(names) >= limit:
+                break
+        return names
 
     # ------------------------------------------------------------------
     # Helpers

@@ -86,6 +86,12 @@ param backfillDefaultLimit int
 @description('Maximum number of result documents accepted by each search-index backfill batch.')
 param backfillMaxLimit int
 
+@description('Default number of ingest blobs scanned by each requeue batch.')
+param reprocessDefaultLimit int
+
+@description('Maximum number of ingest blobs accepted by each requeue batch.')
+param reprocessMaxLimit int
+
 @allowed([
   'WS1'
   'WS2'
@@ -110,8 +116,11 @@ param cosmosAllowedIpAddresses array
 @description('Additional subscription IDs allowed by the Network Security Perimeter inbound rule.')
 param additionalNspSubscriptionIds array
 
-@description('Optional deploying user/service principal object ID for Cosmos read permissions.')
+@description('Optional deploying user/service principal object ID for backward-compatible Cosmos read permissions. Prefer operatorPrincipalObjectIds for new deployments.')
 param deployerPrincipalId string
+
+@description('Microsoft Entra user, group, service principal, or managed identity object IDs that should receive operator data access to Storage blobs, Cosmos DB for NoSQL read/query access, and Azure Maps search/render access.')
+param operatorPrincipalObjectIds array
 
 @description('Enable Container Apps Easy Auth.')
 param enableEasyAuth bool
@@ -126,7 +135,7 @@ param easyAuthClientSecret string
 @description('Tenant ID used for the Easy Auth OpenID issuer.')
 param easyAuthIssuerTenantId string
 
-@description('Deploy or update the Storage BlobCreated Event Grid subscription. Set false for redeploys into an existing environment after Storage is associated with an enforced Network Security Perimeter.')
+@description('Deploy or update the Storage BlobCreated Event Grid subscription. When true, nested modules temporarily place the Storage NSP association in Learning mode, create/update Event Grid, then restore Enforced mode.')
 param manageEventGridSubscription bool
 
 @description('Tags applied to all resources.')
@@ -140,12 +149,33 @@ var logicAppContentShareName = take('logicapp${nameSuffix}', 63)
 var acrName = take('acr${compactProjectName}${nameSuffix}', 50)
 var containerAppImage = contains(containerImage, '/') ? containerImage : '${acr.properties.loginServer}/${containerImage}'
 var shouldEnableEasyAuth = enableEasyAuth && !empty(easyAuthClientId) && !empty(easyAuthClientSecret)
-var shouldAssignDeployer = !empty(deployerPrincipalId)
+var effectiveOperatorPrincipalObjectIds = union(operatorPrincipalObjectIds, !empty(deployerPrincipalId) ? [
+  deployerPrincipalId
+] : [])
 var allowedIpCidrs = [for ip in allowedIpAddresses: contains(ip, '/') ? ip : '${ip}/32']
 var effectiveCosmosAllowedIpAddresses = union(allowedIpAddresses, cosmosAllowedIpAddresses)
 var nspSubscriptionIds = concat([
   subscription().subscriptionId
 ], additionalNspSubscriptionIds)
+var nspName = 'nsp-${namePrefix}-${nameSuffix}'
+var storageNspAssociationName = 'assoc-storage'
+var eventGridSystemTopicName = 'evgt-${namePrefix}-${nameSuffix}'
+var blobCreatedEventSubscriptionName = 'sub-blob-created'
+var nspDiagnosticLogCategories = [
+  'NspPublicInboundPerimeterRulesAllowed'
+  'NspPublicInboundPerimeterRulesDenied'
+  'NspPublicOutboundPerimeterRulesAllowed'
+  'NspPublicOutboundPerimeterRulesDenied'
+  'NspIntraPerimeterInboundAllowed'
+  'NspPublicInboundResourceRulesAllowed'
+  'NspPublicInboundResourceRulesDenied'
+  'NspPublicOutboundResourceRulesAllowed'
+  'NspPublicOutboundResourceRulesDenied'
+  'NspPrivateInboundAllowed'
+  'NspCrossPerimeterOutboundAllowed'
+  'NspCrossPerimeterInboundAllowed'
+  'NspOutboundAttempt'
+]
 var cosmosCapabilities = cosmosThroughputMode == 'Serverless' ? [
   {
     name: 'EnableServerless'
@@ -161,6 +191,7 @@ var cosmosCapabilities = cosmosThroughputMode == 'Serverless' ? [
 var storagePrivateDnsZoneName = 'privatelink.blob.${az.environment().suffixes.storage}'
 
 var roleAcrPull = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')
+var roleReader = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'acdd72a7-3385-48ef-bd42-f606fba81ae7')
 var roleStorageBlobDataContributor = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
 var roleStorageBlobDelegator = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'db58b8e5-c6ad-4a2a-8342-4190687cbf4a')
 var roleCosmosAccountReader = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'fbdf93bf-df7d-467e-a4d2-9458aa1360c8')
@@ -306,6 +337,7 @@ resource storage 'Microsoft.Storage/storageAccounts@2025-06-01' = {
     allowSharedKeyAccess: false
     defaultToOAuthAuthentication: true
     minimumTlsVersion: 'TLS1_2'
+    publicNetworkAccess: 'Enabled'
     networkAcls: {
       bypass: 'AzureServices'
       defaultAction: 'Deny'
@@ -382,6 +414,14 @@ resource completedContainer 'Microsoft.Storage/storageAccounts/blobServices/cont
 resource originalContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2025-06-01' = {
   parent: blobService
   name: 'originaldocument'
+  properties: {
+    publicAccess: 'None'
+  }
+}
+
+resource failedContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2025-06-01' = {
+  parent: blobService
+  name: 'failed'
   properties: {
     publicAccess: 'None'
   }
@@ -815,6 +855,14 @@ resource containerApp 'Microsoft.App/containerApps@2025-07-01' = {
               value: string(backfillMaxLimit)
             }
             {
+              name: 'REPROCESS_DEFAULT_LIMIT'
+              value: string(reprocessDefaultLimit)
+            }
+            {
+              name: 'REPROCESS_MAX_LIMIT'
+              value: string(reprocessMaxLimit)
+            }
+            {
               name: 'STORAGE_CONTAINER_INGEST'
               value: ingestContainer.name
             }
@@ -829,6 +877,10 @@ resource containerApp 'Microsoft.App/containerApps@2025-07-01' = {
             {
               name: 'STORAGE_CONTAINER_ORIGINAL'
               value: originalContainer.name
+            }
+            {
+              name: 'STORAGE_CONTAINER_FAILED'
+              value: failedContainer.name
             }
             {
               name: 'LOG_LEVEL'
@@ -1005,24 +1057,51 @@ resource caCosmosContributor 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssig
   }
 }
 
-resource deployerCosmosReader 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2025-10-15' = if (shouldAssignDeployer) {
+resource operatorStorageReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for principalObjectId in effectiveOperatorPrincipalObjectIds: {
+  name: guid(storage.id, principalObjectId, roleReader)
+  scope: storage
+  properties: {
+    principalId: principalObjectId
+    roleDefinitionId: roleReader
+  }
+}]
+
+resource operatorStorageBlobContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for principalObjectId in effectiveOperatorPrincipalObjectIds: {
+  name: guid(storage.id, principalObjectId, roleStorageBlobDataContributor)
+  scope: storage
+  properties: {
+    principalId: principalObjectId
+    roleDefinitionId: roleStorageBlobDataContributor
+  }
+}]
+
+resource operatorCosmosReader 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2025-10-15' = [for principalObjectId in effectiveOperatorPrincipalObjectIds: {
   parent: cosmos
-  name: guid(cosmos.id, deployerPrincipalId, 'cosmos-data-reader')
+  name: guid(cosmos.id, principalObjectId, 'cosmos-data-reader')
   properties: {
     roleDefinitionId: '${cosmos.id}/sqlRoleDefinitions/00000000-0000-0000-0000-000000000001'
-    principalId: deployerPrincipalId
+    principalId: principalObjectId
     scope: cosmos.id
   }
-}
+}]
 
-resource deployerCosmosAccountReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (shouldAssignDeployer) {
-  name: guid(cosmos.id, deployerPrincipalId, roleCosmosAccountReader)
+resource operatorCosmosAccountReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for principalObjectId in effectiveOperatorPrincipalObjectIds: {
+  name: guid(cosmos.id, principalObjectId, roleCosmosAccountReader)
   scope: cosmos
   properties: {
-    principalId: deployerPrincipalId
+    principalId: principalObjectId
     roleDefinitionId: roleCosmosAccountReader
   }
-}
+}]
+
+resource operatorMapsSearchReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for principalObjectId in effectiveOperatorPrincipalObjectIds: {
+  name: guid(maps.id, principalObjectId, roleAzureMapsSearchRenderDataReader)
+  scope: maps
+  properties: {
+    principalId: principalObjectId
+    roleDefinitionId: roleAzureMapsSearchRenderDataReader
+  }
+}]
 
 resource caOpenAIUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(openai.id, containerApp.id, roleCognitiveServicesOpenAIUser)
@@ -1305,41 +1384,6 @@ resource docintelPrivateDnsZoneGroup 'Microsoft.Network/privateEndpoints/private
   }
 }
 
-resource eventGridSystemTopic 'Microsoft.EventGrid/systemTopics@2025-04-01-preview' = if (manageEventGridSubscription) {
-  name: 'evgt-${namePrefix}-${nameSuffix}'
-  location: location
-  tags: tags
-  properties: {
-    source: storage.id
-    topicType: 'Microsoft.Storage.StorageAccounts'
-  }
-}
-
-resource blobCreatedSubscription 'Microsoft.EventGrid/systemTopics/eventSubscriptions@2025-04-01-preview' = if (manageEventGridSubscription) {
-  parent: eventGridSystemTopic
-  name: 'sub-blob-created'
-  properties: {
-    destination: {
-      endpointType: 'WebHook'
-      properties: {
-        endpointUrl: 'https://${containerApp.properties.configuration.ingress.fqdn}/api/events/blob'
-        maxEventsPerBatch: 1
-        preferredBatchSizeInKilobytes: 64
-      }
-    }
-    filter: {
-      includedEventTypes: [
-        'Microsoft.Storage.BlobCreated'
-      ]
-      subjectBeginsWith: '/blobServices/default/containers/ingest/'
-    }
-    retryPolicy: {
-      eventTimeToLiveInMinutes: 1440
-      maxDeliveryAttempts: 10
-    }
-  }
-}
-
 resource cosmosDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
   name: 'diag-cosmos'
   scope: cosmos
@@ -1384,10 +1428,29 @@ resource storageBlobDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-0
 }
 
 resource nsp 'Microsoft.Network/networkSecurityPerimeters@2023-08-01-preview' = {
-  name: 'nsp-${namePrefix}-${nameSuffix}'
+  name: nspName
   location: location
   tags: tags
   properties: {}
+}
+
+resource nspDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+  name: 'diag-nsp'
+  scope: nsp
+  properties: {
+    workspaceId: logAnalytics.id
+    logAnalyticsDestinationType: 'Dedicated'
+    logs: [for category in nspDiagnosticLogCategories: {
+      category: category
+      enabled: true
+    }]
+    metrics: [
+      {
+        category: 'AllMetrics'
+        enabled: true
+      }
+    ]
+  }
 }
 
 resource nspProfile 'Microsoft.Network/networkSecurityPerimeters/profiles@2023-08-01-preview' = {
@@ -1417,21 +1480,68 @@ resource nspRuleSubscriptions 'Microsoft.Network/networkSecurityPerimeters/profi
   }
 }
 
-resource nspAssociationStorage 'Microsoft.Network/networkSecurityPerimeters/resourceAssociations@2023-08-01-preview' = {
-  parent: nsp
-  name: 'assoc-storage'
-  location: location
-  properties: {
-    accessMode: 'Enforced'
-    privateLinkResource: {
-      id: storage.id
-    }
-    profile: {
-      id: nspProfile.id
-    }
+// Event Grid source validation can fail when the Storage account is already NSP Enforced.
+// The nested deployments let ARM update the same association in ordered stages.
+module storageNspLearning './storage-nsp-association.bicep' = if (manageEventGridSubscription) {
+  name: 'deploy-storage-nsp-learning'
+  params: {
+    location: location
+    networkSecurityPerimeterName: nsp.name
+    associationName: storageNspAssociationName
+    accessMode: 'Learning'
+    storageAccountId: storage.id
+    profileId: nspProfile.id
   }
   dependsOn: [
-    blobCreatedSubscription
+    nspRuleHome
+    nspRuleSubscriptions
+  ]
+}
+
+module storageEventGrid './storage-event-grid.bicep' = if (manageEventGridSubscription) {
+  name: 'deploy-storage-event-grid'
+  params: {
+    manageEventGridSubscription: manageEventGridSubscription
+    location: location
+    systemTopicName: eventGridSystemTopicName
+    storageAccountId: storage.id
+    eventSubscriptionName: blobCreatedEventSubscriptionName
+    webhookEndpointUrl: 'https://${containerApp.properties.configuration.ingress.fqdn}/api/events/blob'
+    tags: tags
+  }
+  dependsOn: [
+    storageNspLearning
+  ]
+}
+
+module storageNspEnforcedAfterEventGrid './storage-nsp-association.bicep' = if (manageEventGridSubscription) {
+  name: 'deploy-storage-nsp-enforced-after-event-grid'
+  params: {
+    location: location
+    networkSecurityPerimeterName: nsp.name
+    associationName: storageNspAssociationName
+    accessMode: 'Enforced'
+    storageAccountId: storage.id
+    profileId: nspProfile.id
+  }
+  dependsOn: [
+    storageEventGrid
+  ]
+}
+
+module storageNspEnforcedDirect './storage-nsp-association.bicep' = if (!manageEventGridSubscription) {
+  name: 'deploy-storage-nsp-enforced'
+  params: {
+    location: location
+    networkSecurityPerimeterName: nsp.name
+    associationName: storageNspAssociationName
+    accessMode: 'Enforced'
+    storageAccountId: storage.id
+    profileId: nspProfile.id
+  }
+  dependsOn: [
+    nspRuleHome
+    nspRuleSubscriptions
   ]
 }
 
@@ -1449,3 +1559,5 @@ output logicAppName string = logicApp.name
 output logicAppUrl string = 'https://${logicApp.properties.defaultHostName}'
 output easyAuthRedirectUri string = 'https://${containerApp.properties.configuration.ingress.fqdn}/.auth/login/aad/callback'
 output logAnalyticsWorkspaceId string = logAnalytics.id
+output logAnalyticsWorkspaceName string = logAnalytics.name
+output networkSecurityPerimeterName string = nsp.name

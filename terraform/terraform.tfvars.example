@@ -30,6 +30,8 @@ cosmos_allowed_ip_addresses = []
 # Search-index backfill/reprocess batches are intentionally bounded.
 # backfill_default_limit = 25
 # backfill_max_limit     = 200
+# reprocess_default_limit = 100
+# reprocess_max_limit     = 5000
 
 # Logic App Standard search facade.
 # logic_app_sku_name = "WS1"
