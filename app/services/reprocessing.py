@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from app.agents.planner import SUPPORTED_TYPES
 from app.config import settings
@@ -29,6 +29,8 @@ class IngestReprocessService:
         dry_run: bool = True,
         prefix: str = "",
         source_container: str | None = None,
+        max_results: int | None = None,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         resolved_source_container = source_container or settings.storage_container_ingest
         blob_names = self.blob.list_blobs(
@@ -53,27 +55,43 @@ class IngestReprocessService:
             active_job = self.cosmos.find_active_job_by_blob_name(blob_name)
             if active_job:
                 skipped_active += 1
-                results.append(
-                    {
-                        "blob_name": blob_name,
-                        "file_name": file_name,
-                        "source_container": resolved_source_container,
-                        "status": "skipped_active_job",
-                        "active_job_id": active_job.get("id"),
-                    }
+                result = {
+                    "blob_name": blob_name,
+                    "file_name": file_name,
+                    "source_container": resolved_source_container,
+                    "status": "skipped_active_job",
+                    "active_job_id": active_job.get("id"),
+                }
+                if max_results is None or len(results) < max_results:
+                    results.append(result)
+                _notify_requeue_progress(
+                    progress_callback,
+                    blob_names,
+                    enqueued,
+                    would_enqueue,
+                    skipped_active,
+                    unsupported_type_count,
                 )
                 continue
 
             if dry_run:
                 would_enqueue += 1
-                results.append(
-                    {
-                        "blob_name": blob_name,
-                        "file_name": file_name,
-                        "source_container": resolved_source_container,
-                        "status": "would_enqueue" if supported_type else "would_enqueue_unsupported_type",
-                        "supported_type": supported_type,
-                    }
+                result = {
+                    "blob_name": blob_name,
+                    "file_name": file_name,
+                    "source_container": resolved_source_container,
+                    "status": "would_enqueue" if supported_type else "would_enqueue_unsupported_type",
+                    "supported_type": supported_type,
+                }
+                if max_results is None or len(results) < max_results:
+                    results.append(result)
+                _notify_requeue_progress(
+                    progress_callback,
+                    blob_names,
+                    enqueued,
+                    would_enqueue,
+                    skipped_active,
+                    unsupported_type_count,
                 )
                 continue
 
@@ -89,15 +107,23 @@ class IngestReprocessService:
             self.cosmos.create_job(job)
             await self.worker.enqueue(job)
             enqueued += 1
-            results.append(
-                {
-                    "blob_name": blob_name,
-                    "file_name": file_name,
-                    "source_container": resolved_source_container,
-                    "status": "enqueued" if supported_type else "enqueued_unsupported_type",
-                    "supported_type": supported_type,
-                    "job_id": job.id,
-                }
+            result = {
+                "blob_name": blob_name,
+                "file_name": file_name,
+                "source_container": resolved_source_container,
+                "status": "enqueued" if supported_type else "enqueued_unsupported_type",
+                "supported_type": supported_type,
+                "job_id": job.id,
+            }
+            if max_results is None or len(results) < max_results:
+                results.append(result)
+            _notify_requeue_progress(
+                progress_callback,
+                blob_names,
+                enqueued,
+                would_enqueue,
+                skipped_active,
+                unsupported_type_count,
             )
 
         return {
@@ -112,6 +138,7 @@ class IngestReprocessService:
             "enqueued": enqueued,
             "skipped_active": skipped_active,
             "unsupported_type_count": unsupported_type_count,
+            "results_truncated": max_results is not None and len(blob_names) > len(results),
             "message": (
                 "Dry run only. Unsupported extensions are still queued on execute so the pipeline can move them to failed."
                 if dry_run
@@ -119,3 +146,26 @@ class IngestReprocessService:
             ),
             "results": results,
         }
+
+
+def _notify_requeue_progress(
+    progress_callback: Callable[[dict[str, Any]], None] | None,
+    blob_names: list[str],
+    enqueued: int,
+    would_enqueue: int,
+    skipped_active: int,
+    unsupported_type_count: int,
+) -> None:
+    if progress_callback is None:
+        return
+    scanned = enqueued + would_enqueue + skipped_active
+    progress_callback(
+        {
+            "scanned": scanned,
+            "total_candidates": len(blob_names),
+            "enqueued": enqueued,
+            "would_enqueue": would_enqueue,
+            "skipped_active": skipped_active,
+            "unsupported_type_count": unsupported_type_count,
+        }
+    )

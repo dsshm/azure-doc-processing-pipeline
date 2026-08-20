@@ -34,17 +34,20 @@ class CosmosPlugin:
         database_name: str | None = None,
         jobs_container: str | None = None,
         results_container: str | None = None,
+        operations_container: str | None = None,
     ):
         self._endpoint = endpoint or os.getenv("COSMOS_ENDPOINT", "")
         self._db_name = database_name or os.getenv("COSMOS_DATABASE_NAME", "docprocessing")
         self._jobs_container_name = jobs_container or os.getenv("COSMOS_CONTAINER_JOBS", "jobs")
         self._results_container_name = results_container or os.getenv("COSMOS_CONTAINER_RESULTS", "results")
+        self._operations_container_name = operations_container or os.getenv("COSMOS_CONTAINER_OPERATIONS", "operations")
 
         credential = DefaultAzureCredential()
         self._client = CosmosClient(url=self._endpoint, credential=credential)
         self._db = self._client.get_database_client(self._db_name)
         self._jobs = self._db.get_container_client(self._jobs_container_name)
         self._results = self._db.get_container_client(self._results_container_name)
+        self._operations = self._db.get_container_client(self._operations_container_name)
 
     # ------------------------------------------------------------------
     # Jobs
@@ -185,6 +188,54 @@ class CosmosPlugin:
         return matches[0] if matches else None
 
     # ------------------------------------------------------------------
+    # Admin operations
+    # ------------------------------------------------------------------
+    def create_operation(self, operation: dict[str, Any]) -> dict[str, Any]:
+        operation = self._strip_system_properties(operation)
+        self._operations.create_item(body=operation)
+        logger.info("Created admin operation %s (%s)", operation.get("id"), operation.get("type"))
+        return operation
+
+    def get_operation(self, operation_id: str) -> Optional[dict[str, Any]]:
+        try:
+            return self._strip_system_properties(self._operations.read_item(item=operation_id, partition_key=operation_id))
+        except CosmosResourceNotFoundError:
+            return None
+
+    def replace_operation(self, operation: dict[str, Any]) -> dict[str, Any]:
+        operation = self._strip_system_properties(operation)
+        operation_id = str(operation["id"])
+        self._operations.replace_item(item=operation_id, body=operation)
+        logger.info("Updated admin operation %s → %s", operation_id, operation.get("status"))
+        return operation
+
+    def list_recent_operations(self, limit: int = 20) -> list[dict[str, Any]]:
+        safe_limit = max(1, min(int(limit), 100))
+        query = f"SELECT TOP {safe_limit} * FROM c ORDER BY c.created_at DESC"
+        return [
+            self._strip_system_properties(item)
+            for item in self._operations.query_items(query=query, enable_cross_partition_query=True)
+        ]
+
+    def list_incomplete_operations(self) -> list[dict[str, Any]]:
+        query = (
+            "SELECT * FROM c "
+            "WHERE c.status = @queued OR c.status = @running "
+            "ORDER BY c.created_at DESC"
+        )
+        params = [
+            {"name": "@queued", "value": "queued"},
+            {"name": "@running", "value": "running"},
+        ]
+        return [
+            self._strip_system_properties(item)
+            for item in self._operations.query_items(query=query, parameters=params, enable_cross_partition_query=True)
+        ]
+
+    def _strip_system_properties(self, document: dict[str, Any]) -> dict[str, Any]:
+        return {key: value for key, value in document.items() if not key.startswith("_")}
+
+    # ------------------------------------------------------------------
     # Results
     # ------------------------------------------------------------------
     @kernel_function(name="save_result", description="Save an analysis result linked to a job.")
@@ -213,6 +264,14 @@ class CosmosPlugin:
         query = "SELECT * FROM c ORDER BY c.metadata.processing_timestamp DESC OFFSET 0 LIMIT @limit"
         params = [{"name": "@limit", "value": limit}]
         return list(self._results.query_items(query=query, parameters=params, enable_cross_partition_query=True))
+
+    def count_results(self) -> int:
+        """Count distinct persisted result documents, not processing attempts or chunks."""
+        results = list(self._results.query_items(
+            query="SELECT VALUE COUNT(1) FROM c",
+            enable_cross_partition_query=True,
+        ))
+        return int(results[0]) if results else 0
 
     def list_search_index_backfill_candidates(
         self,

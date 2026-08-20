@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     cosmos_database_name: str = Field(default="docprocessing")
     cosmos_container_jobs: str = Field(default="jobs")
     cosmos_container_results: str = Field(default="results")
+    cosmos_container_operations: str = Field(default="operations")
 
     # --- Application ---
     search_default_top: int = Field(default=30, description="Default search result count when request omits top")

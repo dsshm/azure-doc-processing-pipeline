@@ -58,11 +58,39 @@ def _resolve_reprocess_source_container(source_container: Literal["ingest", "fai
     }[source_container]
 
 
+@router.get("/settings")
+async def get_admin_settings():
+    """Return admin UI limits backed by current app settings."""
+    return {
+        "backfill_default_limit": settings.backfill_default_limit,
+        "backfill_max_limit": settings.backfill_max_limit,
+        "reprocess_default_limit": settings.reprocess_default_limit,
+        "reprocess_max_limit": settings.reprocess_max_limit,
+        "containers": {
+            "ingest": settings.storage_container_ingest,
+            "failed": settings.storage_container_failed,
+        },
+    }
+
+
 @router.post("/search-index/backfill")
 async def backfill_search_index(request: Request, body: SearchBackfillRequest):
     """Backfill materialized search text and current embedding metadata for existing results."""
     service = request.app.state.search_backfill
     return service.backfill_batch(
+        limit=_resolve_backfill_limit(body.limit),
+        dry_run=body.dry_run,
+        force=body.force,
+        include_chunks=body.include_chunks,
+        include_geocoding=body.include_geocoding,
+    )
+
+
+@router.post("/search-index/backfill/start", status_code=202)
+async def start_backfill_search_index(request: Request, body: SearchBackfillRequest):
+    """Start a persistent search-index backfill operation and return immediately."""
+    service = request.app.state.admin_operations
+    return service.start_search_backfill(
         limit=_resolve_backfill_limit(body.limit),
         dry_run=body.dry_run,
         force=body.force,
@@ -97,3 +125,33 @@ async def reprocess_ingest_blobs(request: Request, body: IngestReprocessRequest)
         prefix=body.prefix,
         source_container=_resolve_reprocess_source_container(body.source_container),
     )
+
+
+@router.post("/ingest/reprocess/start", status_code=202)
+async def start_reprocess_ingest_blobs(request: Request, body: IngestReprocessRequest):
+    """Start a persistent ingest/failed requeue operation and return immediately."""
+    service = request.app.state.admin_operations
+    return service.start_ingest_reprocess(
+        limit=_resolve_reprocess_limit(body.limit),
+        dry_run=body.dry_run,
+        prefix=body.prefix,
+        source_container=body.source_container,
+        source_container_name=_resolve_reprocess_source_container(body.source_container),
+    )
+
+
+@router.get("/operations")
+async def list_admin_operations(request: Request, limit: int = 20):
+    """List recent admin maintenance operations."""
+    service = request.app.state.admin_operations
+    return {"operations": service.list_recent_operations(limit=limit)}
+
+
+@router.get("/operations/{operation_id}")
+async def get_admin_operation(request: Request, operation_id: str):
+    """Get current status for an admin maintenance operation."""
+    service = request.app.state.admin_operations
+    operation = service.get_operation(operation_id)
+    if operation is None:
+        raise HTTPException(status_code=404, detail="Operation not found")
+    return operation

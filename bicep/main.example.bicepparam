@@ -40,6 +40,8 @@ param reprocessDefaultLimit = 100
 param reprocessMaxLimit = 5000
 param logicAppSkuName = 'WS1'
 param logicAppSkuCapacity = 1
+param searchFunctionSkuName = 'EP1'
+param searchFunctionSkuCapacity = 1
 param cosmosThroughputMode = 'Serverless'
 
 // Add public client/admin IPs that need portal or data-plane access to Storage here.

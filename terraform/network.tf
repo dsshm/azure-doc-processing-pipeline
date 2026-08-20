@@ -47,7 +47,7 @@ resource "azurerm_subnet" "ai_services" {
   default_outbound_access_enabled = false
 }
 
-# --- Logic App Standard regional VNet integration subnet ---
+# --- Shared App Service regional VNet integration subnet ---
 resource "azurerm_subnet" "logic_app_integration" {
   name                            = "snet-logic-app-integration"
   resource_group_name             = azurerm_resource_group.main.name

@@ -59,7 +59,7 @@ variable "ai_services_subnet_cidr" {
 }
 
 variable "logic_app_integration_subnet_cidr" {
-  description = "CIDR for the Logic App Standard regional VNet integration subnet"
+  description = "CIDR for the shared App Service regional VNet integration subnet used by the Function App and optional Logic App"
   type        = string
   default     = "10.0.4.0/26"
 }
@@ -196,6 +196,17 @@ variable "logic_app_sku_name" {
   validation {
     condition     = contains(["WS1", "WS2", "WS3"], var.logic_app_sku_name)
     error_message = "logic_app_sku_name must be one of WS1, WS2, or WS3."
+  }
+}
+
+variable "search_function_sku_name" {
+  description = "Azure Functions Elastic Premium SKU for the Power Platform search facade"
+  type        = string
+  default     = "EP1"
+
+  validation {
+    condition     = contains(["EP1", "EP2", "EP3"], var.search_function_sku_name)
+    error_message = "search_function_sku_name must be one of EP1, EP2, or EP3."
   }
 }
 

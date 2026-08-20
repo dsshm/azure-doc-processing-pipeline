@@ -32,7 +32,7 @@ class DocumentSummarizer:
         """
         self.client = openai_client
         self.model_name = model_name
-        self.max_tokens_per_request = 15000  # Conservative limit for input
+        self.max_input_tokens_per_request = 15000  # Conservative limit for input
         self.chunk_size = 10  # Pages per chunk in hierarchical reduction
     
     def reduce_to_document_summary(self, page_summaries: List[Dict[str, Any]], total_pages: int) -> str:
@@ -65,7 +65,7 @@ class DocumentSummarizer:
         try:
             estimated_tokens = self._estimate_tokens(combined_text)
             
-            if estimated_tokens > self.max_tokens_per_request:
+            if estimated_tokens > self.max_input_tokens_per_request:
                 logging.info(f"Large document detected ({estimated_tokens} est. tokens). Using hierarchical reduction.")
                 return self._hierarchical_reduce(summaries_text, total_pages)
             else:
@@ -129,7 +129,7 @@ class DocumentSummarizer:
                 {"role": "user", "content": prompt}
             ],
             temperature=0.3,
-            max_tokens=800,
+            max_completion_tokens=800,
             n=1,
             stop=None,
         )
@@ -179,7 +179,7 @@ Provide a concise 1-2 paragraph summary that captures the key information from t
                         {"role": "user", "content": prompt}
                     ],
                     temperature=0.3,
-                    max_tokens=400,
+                    max_completion_tokens=400,
                     n=1,
                     stop=None,
                 )
@@ -217,7 +217,7 @@ Provide a comprehensive document summary."""
                 {"role": "user", "content": final_prompt}
             ],
             temperature=0.3,
-            max_tokens=800,
+            max_completion_tokens=800,
             n=1,
             stop=None,
         )

@@ -66,6 +66,30 @@ resource "azurerm_cosmosdb_sql_container" "results" {
   partition_key_paths = ["/jobId"]
 }
 
+resource "azurerm_cosmosdb_sql_container" "operations" {
+  name                = "operations"
+  resource_group_name = azurerm_resource_group.main.name
+  account_name        = azurerm_cosmosdb_account.main.name
+  database_name       = azurerm_cosmosdb_sql_database.main.name
+  partition_key_paths = ["/id"]
+
+  indexing_policy {
+    indexing_mode = "consistent"
+
+    included_path {
+      path = "/*"
+    }
+
+    excluded_path {
+      path = "/results/*"
+    }
+
+    excluded_path {
+      path = "/_etag/?"
+    }
+  }
+}
+
 # ---------------------------------------------------------------
 # Search policies for the results container.
 # azurerm doesn't support vector embedding policy / vector indexes,

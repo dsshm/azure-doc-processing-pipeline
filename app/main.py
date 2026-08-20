@@ -25,6 +25,7 @@ from app.agents.planner import PipelineOrchestrator
 from app.services.processing import ProcessingWorker
 from app.services.reprocessing import IngestReprocessService
 from app.services.search_backfill import SearchIndexBackfillService
+from app.services.admin_operations import AdminOperationService
 from app.routers import admin, events, status, documents, search
 
 logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO))
@@ -45,6 +46,12 @@ async def lifespan(app: FastAPI):
     worker = ProcessingWorker(orchestrator=orchestrator)
     search_backfill = SearchIndexBackfillService(cosmos=cosmos, llm=llm, maps=maps)
     ingest_reprocess = IngestReprocessService(blob=blob, cosmos=cosmos, worker=worker)
+    admin_operations = AdminOperationService(
+        cosmos=cosmos,
+        search_backfill=search_backfill,
+        ingest_reprocess=ingest_reprocess,
+    )
+    admin_operations.mark_interrupted_operations()
 
     # Attach to app state so routers can access them
     app.state.blob = blob
@@ -54,6 +61,7 @@ async def lifespan(app: FastAPI):
     app.state.worker = worker
     app.state.search_backfill = search_backfill
     app.state.ingest_reprocess = ingest_reprocess
+    app.state.admin_operations = admin_operations
 
     # Start background worker
     worker_task = asyncio.create_task(worker.start())
@@ -63,6 +71,7 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     logger.info("Shutting down…")
+    await admin_operations.stop()
     await worker.stop()
     worker_task.cancel()
     try:

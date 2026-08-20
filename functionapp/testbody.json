@@ -1,0 +1,6 @@
+{
+  "query": "restaurants in Nashville",
+  "top": 10,
+  "mode": "hybrid",
+  "vector_field": "summary_vector"
+}

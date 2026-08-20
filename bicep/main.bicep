@@ -30,7 +30,7 @@ param privateEndpointsSubnetCidr string = '10.0.2.0/24'
 @description('CIDR for the AI services subnet.')
 param aiServicesSubnetCidr string = '10.0.3.0/24'
 
-@description('CIDR for the Logic App Standard regional VNet integration subnet.')
+@description('CIDR for the shared App Service regional VNet integration subnet used by the Function App and optional Logic App.')
 param logicAppIntegrationSubnetCidr string = '10.0.4.0/26'
 
 @description('Azure OpenAI chat model deployment name.')
@@ -107,6 +107,18 @@ param logicAppSkuName string = 'WS1'
 @minValue(1)
 @description('Logic App Standard plan instance count.')
 param logicAppSkuCapacity int = 1
+
+@allowed([
+  'EP1'
+  'EP2'
+  'EP3'
+])
+@description('Azure Functions Elastic Premium SKU for the Power Platform search facade.')
+param searchFunctionSkuName string = 'EP1'
+
+@minValue(1)
+@description('Azure Functions Elastic Premium plan instance count for the Power Platform search facade.')
+param searchFunctionSkuCapacity int = 1
 
 @allowed([
   'Serverless'
@@ -203,6 +215,8 @@ module documentPipeline './modules/document-pipeline.bicep' = {
     reprocessMaxLimit: reprocessMaxLimit
     logicAppSkuName: logicAppSkuName
     logicAppSkuCapacity: logicAppSkuCapacity
+    searchFunctionSkuName: searchFunctionSkuName
+    searchFunctionSkuCapacity: searchFunctionSkuCapacity
     cosmosThroughputMode: cosmosThroughputMode
     allowedIpAddresses: allowedIpAddresses
     cosmosAllowedIpAddresses: cosmosAllowedIpAddresses
@@ -231,6 +245,8 @@ output containerAppFqdn string = documentPipeline.outputs.containerAppFqdn
 output containerAppUrl string = documentPipeline.outputs.containerAppUrl
 output logicAppName string = documentPipeline.outputs.logicAppName
 output logicAppUrl string = documentPipeline.outputs.logicAppUrl
+output searchFunctionAppName string = documentPipeline.outputs.searchFunctionAppName
+output searchFunctionAppUrl string = documentPipeline.outputs.searchFunctionAppUrl
 output easyAuthRedirectUri string = documentPipeline.outputs.easyAuthRedirectUri
 output logAnalyticsWorkspaceId string = documentPipeline.outputs.logAnalyticsWorkspaceId
 output logAnalyticsWorkspaceName string = documentPipeline.outputs.logAnalyticsWorkspaceName

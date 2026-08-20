@@ -18,7 +18,7 @@ terraform apply
 | Resource | Name Pattern | Purpose |
 |----------|-------------|---------|
 | Resource Group | `rg-{project}-{env}-{suffix}` | Contains everything |
-| Virtual Network | `vnet-{project}-{env}-{suffix}` | Network isolation (4 subnets, including Logic App regional VNet integration) |
+| Virtual Network | `vnet-{project}-{env}-{suffix}` | Network isolation (4 subnets, including shared App Service regional VNet integration) |
 | Storage Account | `st{project}{suffix}` | Blob storage (5 containers: ingest, processing, completed, originaldocument, failed) |
 | Cosmos DB | `cosmos-{project}-{env}-{suffix}` | Job tracking + results + vector/full-text/hybrid search |
 | Azure OpenAI | `oai-{project}-{env}-{suffix}` | GPT-5.1 + text-embedding-3-small |
@@ -26,7 +26,8 @@ terraform apply
 | Container Registry | `acr{project}{suffix}` | Docker image hosting |
 | Container App Env | `cae-{project}-{env}-{suffix}` | Managed container runtime |
 | Container App | `ca-{project}-{env}-{suffix}` | The application |
-| Logic App Standard | `logic-{project}-{env}-{suffix}` | Key-protected search facade |
+| Function App | `func-{project}-{env}-{suffix}` | Recommended host-key-protected search facade |
+| Logic App Standard | `logic-{project}-{env}-{suffix}` | Legacy/optional key-protected search facade |
 | Event Grid Topic | `evgt-{project}-{env}-{suffix}` | BlobCreated event routing |
 | Log Analytics | `law-{project}-{env}-{suffix}` | Logging |
 | Application Insights | `appi-{project}-{env}-{suffix}` | APM / monitoring |
@@ -74,11 +75,23 @@ az acr build \
 terraform output
 ```
 
-Key outputs: `container_app_url`, `logic_app_name`, `acr_login_server`, `resource_group_name`, `cosmos_endpoint`, `openai_endpoint`, `storage_blob_endpoint`.
+Key outputs: `container_app_url`, `search_function_app_name`, `search_function_app_url`, `logic_app_name`, `acr_login_server`, `resource_group_name`, `cosmos_endpoint`, `openai_endpoint`, `storage_blob_endpoint`.
 
-### Deploy the Logic App workflow code
+### Deploy the Function App search facade
 
-Terraform creates the Logic App Standard shell. Deploy the workflow source from the repository root:
+Terraform creates the Function App shell. Deploy the Python function source from the repository root:
+
+```powershell
+.\scripts\Deploy-SearchFunctionApp.ps1 `
+  -ResourceGroupName (terraform output -raw resource_group_name) `
+  -FunctionAppName (terraform output -raw search_function_app_name)
+```
+
+The script returns the host-key-protected `SearchDocuments` URL for Power Platform.
+
+### Optional: deploy the legacy Logic App workflow code
+
+Terraform still creates the Logic App Standard shell for side-by-side validation and rollback. Deploy the workflow source from the repository root only if you still need the Logic App facade:
 
 ```powershell
 .\scripts\Deploy-LogicAppWorkflow.ps1 `
@@ -86,7 +99,7 @@ Terraform creates the Logic App Standard shell. Deploy the workflow source from 
   -LogicAppName (terraform output -raw logic_app_name)
 ```
 
-The workflow calls Azure OpenAI embeddings with the Logic App system-assigned managed identity, then calls the Container App precomputed-vector search endpoints. If embedding generation fails, it falls back to full-text search. Terraform configures the required Logic App app settings, regional VNet integration for private endpoint access, and `Cognitive Services OpenAI User` assignment, but the Standard workflow files are still deployed with the zip-deploy script above.
+Both facades call Azure OpenAI embeddings with their system-assigned managed identities, then call the Container App precomputed-vector search endpoints. If embedding generation fails, they fall back to full-text search. Terraform configures the required app settings, regional VNet integration for private endpoint access, and `Cognitive Services OpenAI User` role assignments, but code files are still deployed with the zip-deploy scripts above.
 
 ## File Reference
 
@@ -102,6 +115,7 @@ The workflow calls Azure OpenAI embeddings with the Logic App system-assigned ma
 | `ai_services.tf` | Azure OpenAI + Document Intelligence + model deployments |
 | `acr.tf` | Container Registry |
 | `container_app.tf` | Container App Environment + Container App |
+| `function_app.tf` | Azure Functions search facade plan, app, and runtime storage |
 | `logic_app.tf` | Logic App Standard plan, app, and runtime storage |
 | `identity.tf` | RBAC role assignments (MI → services) |
 | `auth.tf` | Entra ID app registration + Easy Auth config |

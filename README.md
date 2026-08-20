@@ -14,7 +14,7 @@ An event-driven document processing pipeline running as a **FastAPI Container Ap
    - **Build search content and vector embeddings** using **Azure OpenAI text-embedding-3-small** (1536-dimensional). The result-level search text includes extracted entities, addresses, and geocoded coordinates so Cosmos DB full-text and hybrid search can find addresses, buildings, cities, and related document context.
    - **Store** structured results and embeddings in **Azure Cosmos DB** (NoSQL, serverless) with vector indexes for semantic search.
 4. The original document is archived to the `originaldocument` container. If processing fails, the source blob is moved to the `failed` container so it does not sit in `ingest` forever.
-5. Users can monitor jobs on the **status dashboard**, search documents via the Container App API or **Logic App Standard** facade, and download original files via SAS-protected URLs.
+5. Users can monitor jobs on the **status dashboard**, search documents via the Container App API or **Function App** facade, and download original files via SAS-protected URLs.
 
 ### Azure services used
 
@@ -27,7 +27,8 @@ An event-driven document processing pipeline running as a **FastAPI Container Ap
 | **Azure OpenAI Service** | GPT-5.1 for analysis; text-embedding-3-small for vector embeddings |
 | **Azure Maps** | Fuzzy-search geocoding for extracted location entities |
 | **Azure Cosmos DB** (NoSQL, Serverless) | Job tracking, analysis results, vector search via `VectorDistance()`, and full-text/hybrid search |
-| **Azure Logic Apps Standard** | Key-protected HTTP facade for Power Platform or simple search clients |
+| **Azure Functions** | Host-key-protected HTTP search facade for Power Platform or simple search clients |
+| **Azure Logic Apps Standard** | Legacy/optional key-protected HTTP facade retained for side-by-side rollback |
 | **Azure Container Registry** | Stores the Docker image; pulled by Container Apps via managed identity |
 | **Microsoft Entra ID** | Easy Auth on the Container App; RBAC for service-to-service auth |
 
@@ -39,8 +40,8 @@ An event-driven document processing pipeline running as a **FastAPI Container Ap
 - **Search text + vector embeddings** — result-level `search_text`, summary/search-text vector, purpose vector, and chunk-level vectors (text-embedding-3-small, 1536 dimensions)
 - **Location geocoding** — extracted `locations` entities are enriched with Azure Maps latitude/longitude pins
 - **Cosmos DB full-text, vector, and hybrid search** — BM25 full-text ranking and RRF hybrid ranking with `VectorDistance()`
-- **Status dashboard** — real-time job monitoring with continuation-token paging and real total/status counts, bulk requeue of missed ingest blobs, retry failed jobs, delete jobs
-- **Managed identity first** — service-to-service access uses RBAC; the Logic App HTTP trigger is invoked with a key-protected callback URL for simple clients
+- **Status dashboard** — real-time job monitoring with continuation-token paging, process-attempt counts, distinct result-document counts, bulk requeue of missed ingest blobs, retry failed jobs, delete jobs
+- **Managed identity first** — service-to-service access uses RBAC; the Function App HTTP trigger is invoked with a host-key-protected URL for simple clients
 - **Entra ID Easy Auth** — all endpoints (except webhooks and health) require AAD login
 
 ## Supported File Types
@@ -66,7 +67,7 @@ Image files such as TIFF and JPEG are expected to work through Azure Document In
 | `GET` | `/health` | Health check |
 | `POST` | `/api/events/blob` | Event Grid webhook (BlobCreated) |
 | `GET` | `/api/status` | List one page of jobs (`?status=queued\|processing\|completed\|failed`, `?limit=`, `?continuation_token=`) |
-| `GET` | `/api/status/summary` | Get total job/document count and counts by status without loading job documents |
+| `GET` | `/api/status/summary` | Get process-attempt counts, status counts, and distinct persisted result-document count without loading documents |
 | `GET` | `/api/status/{job_id}` | Job detail with processing steps |
 | `POST` | `/api/status/{job_id}/retry` | Re-queue a failed job |
 | `DELETE` | `/api/status/{job_id}` | Delete job and its results |
@@ -79,8 +80,11 @@ Image files such as TIFF and JPEG are expected to work through Azure Document In
 | `POST` | `/api/search/hybrid` | Cosmos DB hybrid search with vector + full-text RRF ranking; results must also match full text (`{query, vector_field, top}`) |
 | `POST` | `/api/search/hybrid/vector` | Cosmos DB hybrid search with a caller-supplied query embedding (`{query, query_vector, vector_field, top}`) |
 | `POST` | `/api/search/chunks` | Chunk-level vector search (`{query, top}`) |
-| `POST` | `/api/admin/ingest/reprocess` | Dry-run or enqueue a bounded batch of blobs from `ingest` or `failed` (`{dry_run, limit, prefix, source_container}`) |
-| `POST` | `/api/admin/search-index/backfill` | Dry-run or execute a bounded batch backfill for existing Cosmos results (`{dry_run, limit, force, include_geocoding, include_chunks}`) |
+| `POST` | `/api/admin/ingest/reprocess/start` | Start a persistent requeue operation for blobs from `ingest` or `failed` (`{dry_run, limit, prefix, source_container}`) |
+| `POST` | `/api/admin/search-index/backfill/start` | Start a persistent backfill operation for existing Cosmos results (`{dry_run, limit, force, include_geocoding, include_chunks}`) |
+| `GET` | `/api/admin/operations/{operation_id}` | Poll status/progress/results sample for a long-running admin operation |
+| `POST` | `/api/admin/ingest/reprocess` | Synchronous compatibility endpoint for small requeue batches |
+| `POST` | `/api/admin/search-index/backfill` | Synchronous compatibility endpoint for small backfill batches |
 | `POST` | `/api/admin/search-index/backfill/{job_id}` | Dry-run or execute backfill for one result document |
 
 All endpoints except `/api/events/*` and `/health` are protected by Entra ID Easy Auth.
@@ -142,31 +146,33 @@ az network perimeter association update \
   --access-mode Enforced
 ```
 
-The Bicep deployment also provisions a **Logic App Standard** resource on a Workflow Standard plan (`WS1` by default). Deploy the workflow code after the infrastructure finishes:
+The Bicep deployment provisions a **Python Azure Function App** as the recommended Power Platform search facade. Deploy the function code after the infrastructure finishes:
 
 ```powershell
 $resourceGroupName = az deployment sub show `
   --name main `
   --query properties.outputs.resourceGroupName.value -o tsv
 
-$logicAppName = az deployment sub show `
+$functionAppName = az deployment sub show `
   --name main `
-  --query properties.outputs.logicAppName.value -o tsv
+  --query properties.outputs.searchFunctionAppName.value -o tsv
 
-.\scripts\Deploy-LogicAppWorkflow.ps1 `
+.\scripts\Deploy-SearchFunctionApp.ps1 `
   -ResourceGroupName $resourceGroupName `
-  -LogicAppName $logicAppName
+  -FunctionAppName $functionAppName
 ```
 
-The deploy script returns the `SearchDocuments` HTTP trigger URL, including the `sig` query-string key. Treat that URL as a secret. Clients can call it without Entra auth:
+The deploy script returns the `SearchDocuments` HTTP trigger URL, including the `code` query-string host key. Treat that URL as a secret. Clients can call it without Entra auth:
 
 ```powershell
 Invoke-RestMethod `
   -Method Post `
-  -Uri '<logic_app_trigger_url_with_sig>' `
+  -Uri '<function_url_with_code>' `
   -ContentType 'application/json' `
   -Body '{"query":"nashville","mode":"hybrid","top":10}'
 ```
+
+The older Logic App Standard facade is still deployed for side-by-side validation and rollback. If you still need it, deploy `logicapp\SearchDocuments` with `scripts\Deploy-LogicAppWorkflow.ps1`.
 
 > **Easy Auth note**: Terraform creates the Entra app registration and client secret. Bicep does not emit a new secret value, so Easy Auth is disabled by default in the Bicep params. To enable it, create or reuse an Entra app registration and set `enableEasyAuth`, `easyAuthClientId`, and the secure `easyAuthClientSecret` parameter.
 
@@ -197,12 +203,12 @@ terraform apply   # type "yes" to confirm
 
 > **Important**: After `terraform apply`, note the outputs — you'll need `acr_login_server`, `resource_group_name`, and the service endpoints for configuration. Run `terraform output` at any time to see them again.
 
-Terraform also creates the Logic App Standard shell. From the repository root, deploy the workflow code after `terraform apply`:
+Terraform also creates the Function App search facade shell. From the repository root, deploy the function code after `terraform apply`:
 
 ```powershell
-.\scripts\Deploy-LogicAppWorkflow.ps1 `
+.\scripts\Deploy-SearchFunctionApp.ps1 `
   -ResourceGroupName (terraform -chdir=terraform output -raw resource_group_name) `
-  -LogicAppName (terraform -chdir=terraform output -raw logic_app_name)
+  -FunctionAppName (terraform -chdir=terraform output -raw search_function_app_name)
 ```
 
 > **📘 See [terraform/README.md](terraform/README.md)** for the full list of resources created, all configurable variables, post-deployment steps, and file-by-file documentation of the Terraform modules.
@@ -411,6 +417,7 @@ All configuration is via environment variables. **No API keys** — the app uses
 │   │   ├── documents.py          # Analysis results + original download
 │   │   └── search.py             # Vector similarity search
 │   ├── services/
+│   │   ├── admin_operations.py   # Cosmos-backed long-running admin operation polling
 │   │   ├── processing.py         # Background async worker (asyncio.Queue)
 │   │   ├── reprocessing.py       # Bounded ingest/failed-container requeue service
 │   │   └── search_backfill.py    # Stored-result search/geocode/vector backfill
@@ -418,9 +425,10 @@ All configuration is via environment variables. **No API keys** — the app uses
 │       └── index.html            # Status dashboard (single-page HTML)
 ├── terraform/                    # Existing Terraform Infrastructure as Code
 ├── bicep/                        # Bicep deployment equivalent plus Azure Maps
+├── functionapp/                  # Python Azure Functions search facade for Power Platform
 ├── logicapp/                      # Logic App Standard workflow project
 │   └── SearchDocuments/           # Key-protected search facade workflow
-├── scripts/                      # Operational helper scripts and search/Logic App utilities
+├── scripts/                      # Operational helper scripts and search facade utilities
 ├── queries/                      # Log Analytics KQL queries
 ├── legacy/                       # Archived Azure Functions code (reference only)
 ├── Dockerfile                    # Multi-stage Python 3.11 build
@@ -466,14 +474,14 @@ Hybrid search requires `FullTextContainsAny(c.search_text, ...)` before applying
 
 ### Ingest requeue for missed Event Grid events
 
-If files remain in the `ingest` container because Event Grid missed `BlobCreated` events or a previous deployment was unhealthy, use the dashboard **Ingest Requeue** card or call the admin API directly. The same endpoint can also scan the `failed` container for files manually staged there for another processing attempt. It scans a bounded batch of existing source blobs, skips blobs that already have active queued/processing jobs, creates normal processing jobs for the rest, and lets the existing worker move each blob through the standard lifecycle.
+If files remain in the `ingest` container because Event Grid missed `BlobCreated` events or a previous deployment was unhealthy, use the dashboard **Ingest Requeue** card or call the admin API directly. The same flow can also scan the `failed` container for files manually staged there for another processing attempt. Long-running requeue work starts as a persistent admin operation, returns HTTP `202` immediately, and is polled through `/api/admin/operations/{operation_id}` so browser, proxy, and Container App ingress timeouts do not interrupt the user experience.
 
 Run a dry-run first:
 
 ```powershell
 Invoke-RestMethod `
   -Method Post `
-  -Uri "$containerAppUrl/api/admin/ingest/reprocess" `
+  -Uri "$containerAppUrl/api/admin/ingest/reprocess/start" `
   -ContentType 'application/json' `
   -Body '{"dry_run":true,"limit":100,"prefix":"","source_container":"ingest"}'
 ```
@@ -483,20 +491,28 @@ Queue a bounded batch from `ingest`:
 ```powershell
 Invoke-RestMethod `
   -Method Post `
-  -Uri "$containerAppUrl/api/admin/ingest/reprocess" `
+  -Uri "$containerAppUrl/api/admin/ingest/reprocess/start" `
   -ContentType 'application/json' `
   -Body '{"dry_run":false,"limit":100,"prefix":"","source_container":"ingest"}'
 ```
 
+Poll the returned operation:
+
+```powershell
+Invoke-RestMethod `
+  -Method Get `
+  -Uri "$containerAppUrl/api/admin/operations/<operation_id>"
+```
+
 To requeue files that are only in `failed`, use `"source_container":"failed"` with the same dry-run-then-execute flow. This is separate from job-level retry: retry an existing failed Cosmos job from the job detail page, but use failed-source requeue when files were manually uploaded or moved into `failed` without an existing job record.
 
-For millions of blobs, process in controlled batches and use `prefix` to shard the work by folder/date/name range. Run the endpoint repeatedly until `blobs_scanned` is `0` for the selected source/prefix. Keep `MAX_CONCURRENT_JOBS`, model quota, Document Intelligence limits, and Cosmos RU/serverless throttling in mind; the button queues work, but the worker still controls actual concurrency.
+For millions of blobs, use `prefix` to shard the work by folder/date/name range when possible. The operation persists status in the Cosmos `operations` container and samples detailed results to avoid oversized operation documents. Keep `MAX_CONCURRENT_JOBS`, model quota, Document Intelligence limits, and Cosmos RU/serverless throttling in mind; the button queues work, but the worker still controls actual document-processing concurrency.
 
 Unsupported file extensions are still queued on execute. The pipeline fails them before Document Intelligence, records a failed job, and moves the blob to `failed` so unsupported or bad files do not remain in `ingest`.
 
 ### Search-index backfill / reprocess stored results
 
-The app includes an operator-triggered backfill path for existing Cosmos results. It does not rerun Document Intelligence or LLM extraction; it rebuilds the search material that can be derived from the stored result document:
+The app includes an operator-triggered backfill path for existing Cosmos results. It does not rerun Document Intelligence or LLM extraction; it rebuilds the search material that can be derived from the stored result document. Long-running backfill work starts as a persistent admin operation, returns HTTP `202` immediately, and is polled through `/api/admin/operations/{operation_id}`.
 
 - missing or invalid Azure Maps `key_fields.entities.geocoded_locations` entries, using stored location/entity text
 - `search_text`
@@ -511,7 +527,7 @@ Run a dry-run first:
 ```powershell
 Invoke-RestMethod `
   -Method Post `
-  -Uri "$containerAppUrl/api/admin/search-index/backfill" `
+  -Uri "$containerAppUrl/api/admin/search-index/backfill/start" `
   -ContentType 'application/json' `
   -Body '{"dry_run":true,"limit":25,"include_geocoding":true,"include_chunks":true}'
 ```
@@ -523,9 +539,17 @@ Execute the batch:
 ```powershell
 Invoke-RestMethod `
   -Method Post `
-  -Uri "$containerAppUrl/api/admin/search-index/backfill" `
+  -Uri "$containerAppUrl/api/admin/search-index/backfill/start" `
   -ContentType 'application/json' `
   -Body '{"dry_run":false,"limit":25,"include_geocoding":true,"include_chunks":true}'
+```
+
+Poll the returned operation:
+
+```powershell
+Invoke-RestMethod `
+  -Method Get `
+  -Uri "$containerAppUrl/api/admin/operations/<operation_id>"
 ```
 
 When `include_geocoding` is enabled, the execute path runs Azure Maps first for documents that have extracted location/entity text but no usable lat/lon results. If geocoding changes the document, the app rebuilds `search_text` and regenerates any vector whose source-text hash is no longer current so the new coordinates are represented in full-text and hybrid search.
@@ -544,20 +568,20 @@ Embeddings are not reliably identifiable from the vector values themselves. `tex
 
 Cosmos DB full-text search can index existing string fields by changing the container `fullTextPolicy` and `indexingPolicy.fullTextIndexes`, but paths must be explicit and index updates rebuild asynchronously. It is not a wildcard full-text index across arbitrary nested strings. Keeping `search_text` as a materialized field gives one stable path for BM25 and hybrid RRF queries while preserving control over which fields, entities, geocoded addresses, and coordinates are searchable.
 
-## Logic App facade for Power Platform
+## Function App facade for Power Platform
 
-The Bicep deployment creates a **Logic App Standard** resource on a Workflow Standard plan, not a Consumption workflow. This is the supported single-tenant model for new Logic Apps. If you need full App Service isolation, deploy the Standard app into an ASE v3 plan; legacy Logic Apps ISE is not the recommended path for new workloads.
+The recommended Power Platform facade is a **Python Azure Function App** in `functionapp\function_app.py`. Python is used so the facade matches the rest of the solution and can be debugged with the same local tooling. The function is host-key protected (`authLevel=function`) for a simple Power Apps call pattern and uses its managed identity to call Azure OpenAI for query-time embeddings.
 
-The workflow source lives in `logicapp\SearchDocuments\workflow.json`. It is a key-protected search facade:
+The Function App keeps the same search contract as the original Logic App:
 
-1. A caller invokes the `SearchDocuments` HTTP trigger with the callback URL `sig` key.
+1. A caller invokes the `SearchDocuments` HTTP trigger with the function or host key in the `code` query string.
 2. The workflow validates `query` and `top`.
 3. The workflow routes `mode`:
-  - `hybrid` -> calls Azure OpenAI embeddings with the Logic App managed identity, then calls `POST /api/search/hybrid/vector`
+  - `hybrid` -> calls Azure OpenAI embeddings with the Function App managed identity, then calls `POST /api/search/hybrid/vector`
    - `full-text` -> `POST /api/search/full-text`
-  - `vector` -> calls Azure OpenAI embeddings with the Logic App managed identity, then calls `POST /api/search/vector`
+  - `vector` -> calls Azure OpenAI embeddings with the Function App managed identity, then calls `POST /api/search/vector`
 4. If Azure OpenAI does not return a usable embedding for `hybrid` or `vector`, the workflow falls back to `POST /api/search/full-text`.
-5. The Container App uses the supplied query vector to query Cosmos DB, so the Logic App owns query-time vectorization while the app still owns Cosmos query construction.
+5. The Container App uses the supplied query vector to query Cosmos DB, so the Function App owns query-time vectorization while the app still owns Cosmos query construction.
 6. The workflow returns the Container App status code and response body. Response headers include `x-docpipeline-search-mode`; fallback responses set it to `full-text-fallback`.
 
 Request body:
@@ -576,16 +600,16 @@ Request body:
 Deploy or update workflow code:
 
 ```powershell
-.\scripts\Deploy-LogicAppWorkflow.ps1 `
+.\scripts\Deploy-SearchFunctionApp.ps1 `
   -ResourceGroupName <resource_group_name> `
-  -LogicAppName <logic_app_name>
+  -FunctionAppName <function_app_name>
 ```
 
-The script returns the HTTP trigger callback URL. This URL is key-protected; rotate/regenerate the trigger key if the URL is exposed. Store it as a secret in Power Platform or whichever client calls the workflow.
+The script returns the HTTP trigger URL with a host key. Store that URL as a Power Platform secret/environment variable. Rotate/regenerate the host key if the URL is exposed.
 
-The Bicep and Terraform deployments create the Logic App Standard host, app settings, Azure OpenAI RBAC, and a dedicated regional VNet integration subnet so the workflow can reach the private Azure OpenAI endpoint. Logic App Standard workflows are file content under the workflow app, and the Microsoft.Web provider in this environment does not expose a first-class `sites/workflows` child resource for those files. Deploy workflow code with `scripts\Deploy-LogicAppWorkflow.ps1` after infrastructure deployment.
+The Bicep and Terraform deployments create the Function App host, app settings, Azure OpenAI RBAC, and regional VNet integration so the function can reach the private Azure OpenAI endpoint. Deploy function code with `scripts\Deploy-SearchFunctionApp.ps1` after infrastructure deployment.
 
-Direct Cosmos access from Logic Apps is possible, but Cosmos DB REST calls with Entra ID require Cosmos-specific `type=aad&ver=1.0&sig=<token>` authorization header encoding. `scripts\Test-DocumentSearch.ps1` demonstrates that lower-level flow for testing. The deployed Logic App intentionally delegates Cosmos query construction to the Container App so there is one implementation of the search logic, while query-time embeddings are generated in the workflow.
+The older Logic App Standard facade is still available in `logicapp\SearchDocuments\workflow.json` and can be deployed with `scripts\Deploy-LogicAppWorkflow.ps1` if rollback is needed. Direct Cosmos access from Logic Apps or Functions is possible, but Cosmos DB REST calls with Entra ID require Cosmos-specific `type=aad&ver=1.0&sig=<token>` authorization header encoding. The deployed facades intentionally delegate Cosmos query construction to the Container App so there is one implementation of the search logic, while query-time embeddings are generated in the facade.
 
 ## Monitoring and KQL
 
@@ -641,7 +665,7 @@ The Container App uses **system-assigned managed identity** with these roles:
 
 Entra ID Easy Auth protects the web UI and API. Event Grid webhook and health endpoints are excluded from auth.
 
-The Logic App Standard HTTP trigger is protected by its callback URL signature (`sig` query string). The workflow uses its system-assigned managed identity to call Azure OpenAI embeddings and then calls the Container App search facade. The Logic App identity needs `Cognitive Services OpenAI User` on the Azure OpenAI account; it does not need Cosmos DB RBAC unless you change the workflow to query Cosmos directly.
+The Function App HTTP trigger is protected by its host/function key (`code` query string). The function uses its system-assigned managed identity to call Azure OpenAI embeddings and then calls the Container App search facade. The Function App identity needs `Cognitive Services OpenAI User` on the Azure OpenAI account; it does not need Cosmos DB RBAC unless you change the function to query Cosmos directly. The legacy Logic App facade uses the same managed-identity pattern with its callback URL `sig`.
 
 ### Grant operator data access with Bicep
 

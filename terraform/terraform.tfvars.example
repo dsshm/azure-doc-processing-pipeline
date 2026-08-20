@@ -36,6 +36,9 @@ cosmos_allowed_ip_addresses = []
 # Logic App Standard search facade.
 # logic_app_sku_name = "WS1"
 
+# Azure Functions search facade.
+# search_function_sku_name = "EP1"
+
 tags = {
   owner = "your-team"
 }

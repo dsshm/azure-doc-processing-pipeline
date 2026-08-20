@@ -26,7 +26,7 @@ param privateEndpointsSubnetCidr string
 @description('CIDR for the AI services subnet.')
 param aiServicesSubnetCidr string
 
-@description('CIDR for the Logic App Standard regional VNet integration subnet.')
+@description('CIDR for the shared App Service regional VNet integration subnet used by the Function App and optional Logic App.')
 param logicAppIntegrationSubnetCidr string
 
 @description('Azure OpenAI chat model deployment name.')
@@ -104,6 +104,18 @@ param logicAppSkuName string
 @description('Logic App Standard plan instance count.')
 param logicAppSkuCapacity int
 
+@allowed([
+  'EP1'
+  'EP2'
+  'EP3'
+])
+@description('Azure Functions Elastic Premium SKU for the Power Platform search facade.')
+param searchFunctionSkuName string
+
+@minValue(1)
+@description('Azure Functions Elastic Premium plan instance count for the Power Platform search facade.')
+param searchFunctionSkuCapacity int
+
 @description('Cosmos DB capacity mode.')
 param cosmosThroughputMode string
 
@@ -146,6 +158,8 @@ var compactProjectName = toLower(replace(projectName, '-', ''))
 var storageAccountName = take('st${compactProjectName}${nameSuffix}', 24)
 var logicAppStorageAccountName = take('stlogic${compactProjectName}${nameSuffix}', 24)
 var logicAppContentShareName = take('logicapp${nameSuffix}', 63)
+var searchFunctionStorageAccountName = take('stfunc${compactProjectName}${nameSuffix}', 24)
+var searchFunctionContentShareName = take('funcapp${nameSuffix}', 63)
 var acrName = take('acr${compactProjectName}${nameSuffix}', 50)
 var containerAppImage = contains(containerImage, '/') ? containerImage : '${acr.properties.loginServer}/${containerImage}'
 var shouldEnableEasyAuth = enableEasyAuth && !empty(easyAuthClientId) && !empty(easyAuthClientSecret)
@@ -458,6 +472,40 @@ resource logicAppPlan 'Microsoft.Web/serverfarms@2024-11-01' = {
   }
 }
 
+resource searchFunctionStorage 'Microsoft.Storage/storageAccounts@2025-06-01' = {
+  name: searchFunctionStorageAccountName
+  location: location
+  tags: tags
+  kind: 'StorageV2'
+  sku: {
+    name: 'Standard_LRS'
+  }
+  properties: {
+    allowBlobPublicAccess: false
+    allowSharedKeyAccess: true
+    defaultToOAuthAuthentication: false
+    minimumTlsVersion: 'TLS1_2'
+  }
+}
+
+var searchFunctionStorageConnectionString = 'DefaultEndpointsProtocol=https;AccountName=${searchFunctionStorage.name};EndpointSuffix=${az.environment().suffixes.storage};AccountKey=${searchFunctionStorage.listKeys().keys[0].value}'
+
+resource searchFunctionPlan 'Microsoft.Web/serverfarms@2024-11-01' = {
+  name: 'plan-func-${namePrefix}-${nameSuffix}'
+  location: location
+  tags: tags
+  kind: 'elastic'
+  sku: {
+    name: searchFunctionSkuName
+    tier: 'ElasticPremium'
+    size: searchFunctionSkuName
+    capacity: searchFunctionSkuCapacity
+  }
+  properties: {
+    reserved: true
+  }
+}
+
 resource acr 'Microsoft.ContainerRegistry/registries@2025-05-01-preview' = {
   name: acrName
   location: location
@@ -704,6 +752,39 @@ resource resultsContainer 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/co
   }
 }
 
+resource operationsContainer 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2025-10-15' = {
+  parent: cosmosDatabase
+  name: 'operations'
+  properties: {
+    resource: {
+      id: 'operations'
+      partitionKey: {
+        paths: [
+          '/id'
+        ]
+        kind: 'Hash'
+      }
+      indexingPolicy: {
+        indexingMode: 'consistent'
+        automatic: true
+        includedPaths: [
+          {
+            path: '/*'
+          }
+        ]
+        excludedPaths: [
+          {
+            path: '/results/*'
+          }
+          {
+            path: '/_etag/?'
+          }
+        ]
+      }
+    }
+  }
+}
+
 resource containerAppEnvironment 'Microsoft.App/managedEnvironments@2025-07-01' = {
   name: 'cae-${namePrefix}-${nameSuffix}'
   location: location
@@ -837,6 +918,10 @@ resource containerApp 'Microsoft.App/containerApps@2025-07-01' = {
             {
               name: 'COSMOS_DATABASE_NAME'
               value: cosmosDatabase.name
+            }
+            {
+              name: 'COSMOS_CONTAINER_OPERATIONS'
+              value: operationsContainer.name
             }
             {
               name: 'SEARCH_DEFAULT_TOP'
@@ -989,6 +1074,103 @@ resource logicApp 'Microsoft.Web/sites@2024-11-01' = {
   }
 }
 
+resource searchFunctionApp 'Microsoft.Web/sites@2024-11-01' = {
+  name: 'func-${namePrefix}-${nameSuffix}'
+  location: location
+  kind: 'functionapp,linux'
+  tags: tags
+  identity: {
+    type: 'SystemAssigned'
+  }
+  properties: {
+    serverFarmId: searchFunctionPlan.id
+    httpsOnly: true
+    publicNetworkAccess: 'Enabled'
+    virtualNetworkSubnetId: logicAppIntegrationSubnetId
+    siteConfig: {
+      minTlsVersion: '1.2'
+      ftpsState: 'Disabled'
+      linuxFxVersion: 'Python|3.11'
+      alwaysOn: true
+      vnetRouteAllEnabled: true
+      appSettings: [
+        {
+          name: 'AzureWebJobsStorage'
+          value: searchFunctionStorageConnectionString
+        }
+        {
+          name: 'WEBSITE_CONTENTAZUREFILECONNECTIONSTRING'
+          value: searchFunctionStorageConnectionString
+        }
+        {
+          name: 'WEBSITE_CONTENTSHARE'
+          value: searchFunctionContentShareName
+        }
+        {
+          name: 'FUNCTIONS_EXTENSION_VERSION'
+          value: '~4'
+        }
+        {
+          name: 'FUNCTIONS_WORKER_RUNTIME'
+          value: 'python'
+        }
+        {
+          name: 'AzureWebJobsFeatureFlags'
+          value: 'EnableWorkerIndexing'
+        }
+        {
+          name: 'SCM_DO_BUILD_DURING_DEPLOYMENT'
+          value: 'true'
+        }
+        {
+          name: 'ENABLE_ORYX_BUILD'
+          value: 'true'
+        }
+        {
+          name: 'WEBSITE_VNET_ROUTE_ALL'
+          value: '1'
+        }
+        {
+          name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
+          value: appInsights.properties.ConnectionString
+        }
+        {
+          name: 'CONTAINER_APP_BASE_URL'
+          value: 'https://${containerApp.properties.configuration.ingress.fqdn}'
+        }
+        {
+          name: 'AZURE_OPENAI_ENDPOINT'
+          value: openai.properties.endpoint
+        }
+        {
+          name: 'AZURE_OPENAI_EMBEDDING_MODEL'
+          value: embeddingModelName
+        }
+        {
+          name: 'AZURE_OPENAI_EMBEDDING_API_VERSION'
+          value: openaiEmbeddingApiVersion
+        }
+        {
+          name: 'SEARCH_DEFAULT_TOP'
+          value: string(searchDefaultTop)
+        }
+        {
+          name: 'SEARCH_MAX_TOP'
+          value: string(searchMaxTop)
+        }
+        {
+          name: 'SEARCH_DEFAULT_VECTOR_FIELD'
+          value: 'summary_vector'
+        }
+        {
+          name: 'REQUEST_TIMEOUT_SECONDS'
+          value: '30'
+        }
+      ]
+    }
+  }
+}
+
 resource containerAppAuth 'Microsoft.App/containerApps/authConfigs@2024-03-01' = if (shouldEnableEasyAuth) {
   parent: containerApp
   name: 'current'
@@ -1118,6 +1300,16 @@ resource logicAppOpenAIUser 'Microsoft.Authorization/roleAssignments@2022-04-01'
   scope: openai
   properties: {
     principalId: logicApp.identity.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: roleCognitiveServicesOpenAIUser
+  }
+}
+
+resource searchFunctionOpenAIUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(openai.id, searchFunctionApp.id, roleCognitiveServicesOpenAIUser)
+  scope: openai
+  properties: {
+    principalId: searchFunctionApp.identity.principalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: roleCognitiveServicesOpenAIUser
   }
@@ -1557,6 +1749,8 @@ output containerAppFqdn string = containerApp.properties.configuration.ingress.f
 output containerAppUrl string = 'https://${containerApp.properties.configuration.ingress.fqdn}'
 output logicAppName string = logicApp.name
 output logicAppUrl string = 'https://${logicApp.properties.defaultHostName}'
+output searchFunctionAppName string = searchFunctionApp.name
+output searchFunctionAppUrl string = 'https://${searchFunctionApp.properties.defaultHostName}'
 output easyAuthRedirectUri string = 'https://${containerApp.properties.configuration.ingress.fqdn}/.auth/login/aad/callback'
 output logAnalyticsWorkspaceId string = logAnalytics.id
 output logAnalyticsWorkspaceName string = logAnalytics.name

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from azure.cosmos.exceptions import CosmosAccessConditionFailedError
 
@@ -37,6 +37,8 @@ class SearchIndexBackfillService:
         force: bool = False,
         include_chunks: bool = True,
         include_geocoding: bool = True,
+        max_results: int | None = None,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         candidates = self.cosmos.list_search_index_backfill_candidates(
             limit=limit,
@@ -50,6 +52,7 @@ class SearchIndexBackfillService:
 
         results: list[dict[str, Any]] = []
         updated = 0
+        would_update = 0
         skipped = 0
         failed = 0
         generated_embeddings = 0
@@ -63,16 +66,30 @@ class SearchIndexBackfillService:
                 include_chunks=include_chunks,
                 include_geocoding=include_geocoding,
             )
-            results.append(outcome)
             status = outcome["status"]
             if status == "updated":
                 updated += 1
                 generated_embeddings += int(outcome.get("generated_embeddings") or 0)
                 geocoded_locations_added += int(outcome.get("geocoded_locations_added") or 0)
+            elif status == "would_update":
+                would_update += 1
             elif status == "skipped":
                 skipped += 1
             elif status == "failed":
                 failed += 1
+            if max_results is None or len(results) < max_results:
+                results.append(outcome)
+            _notify_backfill_progress(
+                progress_callback,
+                candidate_count=len(candidates),
+                processed=updated + would_update + skipped + failed,
+                updated=updated,
+                would_update=would_update,
+                skipped=skipped,
+                failed=failed,
+                generated_embeddings=generated_embeddings,
+                geocoded_locations_added=geocoded_locations_added,
+            )
 
         candidate_count = len(candidates)
         if force:
@@ -115,10 +132,12 @@ class SearchIndexBackfillService:
             "candidate_documents_scanned": candidate_count,
             "scanned": candidate_count,
             "updated": updated,
+            "would_update": would_update,
             "skipped": skipped,
             "failed": failed,
             "generated_embeddings": generated_embeddings,
             "geocoded_locations_added": geocoded_locations_added,
+            "results_truncated": max_results is not None and candidate_count > len(results),
             "results": results,
         }
 
@@ -230,3 +249,30 @@ class SearchIndexBackfillService:
                 "assessment": assessment.to_dict(),
                 "geocoding_assessment": geocoding_assessment.to_dict() if geocoding_assessment else None,
             }
+
+
+def _notify_backfill_progress(
+    progress_callback: Callable[[dict[str, Any]], None] | None,
+    candidate_count: int,
+    processed: int,
+    updated: int,
+    would_update: int,
+    skipped: int,
+    failed: int,
+    generated_embeddings: int,
+    geocoded_locations_added: int,
+) -> None:
+    if progress_callback is None:
+        return
+    progress_callback(
+        {
+            "processed": processed,
+            "candidate_documents_scanned": candidate_count,
+            "updated": updated,
+            "would_update": would_update,
+            "skipped": skipped,
+            "failed": failed,
+            "generated_embeddings": generated_embeddings,
+            "geocoded_locations_added": geocoded_locations_added,
+        }
+    )

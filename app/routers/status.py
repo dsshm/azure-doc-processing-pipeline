@@ -52,8 +52,10 @@ async def get_status_summary(request: Request):
     cosmos = request.app.state.cosmos
     status_counts = cosmos.count_jobs_by_status()
     total_count = cosmos.count_jobs()
+    result_documents_count = cosmos.count_results()
     return {
         "total_count": total_count,
+        "result_documents_count": result_documents_count,
         "status_counts": status_counts,
         "queue_depth": request.app.state.worker.queue_depth,
         "active_jobs": request.app.state.worker.active_jobs,

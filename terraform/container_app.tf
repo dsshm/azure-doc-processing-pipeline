@@ -97,6 +97,10 @@ resource "azurerm_container_app" "main" {
         value = azurerm_cosmosdb_sql_database.main.name
       }
       env {
+        name  = "COSMOS_CONTAINER_OPERATIONS"
+        value = azurerm_cosmosdb_sql_container.operations.name
+      }
+      env {
         name  = "SEARCH_DEFAULT_TOP"
         value = tostring(var.search_default_top)
       }

@@ -82,6 +82,7 @@
     <span id="stat-queue">Queue: 0</span>
     <span id="stat-active">Active: 0</span>
     <span id="stat-total">Total: 0</span>
+    <span id="stat-results">Result docs: 0</span>
   </div>
 </header>
 <main>
@@ -171,9 +172,16 @@ let currentPageTokens = [''];
 let nextPageToken = null;
 let currentSummary = { total_count: 0, status_counts: {} };
 let lastSummaryRefresh = 0;
+let adminSettings = {
+  backfill_default_limit: 25,
+  backfill_max_limit: 200,
+  reprocess_default_limit: 100,
+  reprocess_max_limit: 5000,
+};
 
 const JOB_REFRESH_MS = 30000;
 const SUMMARY_REFRESH_MS = 300000;
+const OPERATION_POLL_MS = 2000;
 
 const STATUS_LABELS = {
   queued: 'Queued',
@@ -202,6 +210,7 @@ document.getElementById('page-size').addEventListener('change', () => {
 async function loadDashboard(options = {}) {
   const refreshSummary = options.refreshSummary ?? true;
   try {
+    await loadAdminSettings();
     if (refreshSummary) await loadSummary();
     await loadJobs();
   } catch (err) {
@@ -209,6 +218,32 @@ async function loadDashboard(options = {}) {
     document.getElementById('job-list').innerHTML =
       `<tr><td colspan="5" class="empty">Failed to load dashboard: ${esc(err.message || String(err))}</td></tr>`;
   }
+}
+
+async function loadAdminSettings() {
+  if (adminSettings.loaded) return;
+
+  try {
+    const res = await fetch(`${API}/api/admin/settings`);
+    if (!res.ok) throw new Error('Failed to load admin settings');
+    adminSettings = { ...adminSettings, ...(await res.json()), loaded: true };
+    applyAdminSettings();
+  } catch (err) {
+    console.warn('Using default admin UI limits because settings could not be loaded', err);
+    adminSettings.loaded = true;
+  }
+}
+
+function applyAdminSettings() {
+  const reprocessLimit = document.getElementById('reprocess-limit');
+  reprocessLimit.max = String(adminSettings.reprocess_max_limit);
+  reprocessLimit.value = String(adminSettings.reprocess_default_limit);
+  reprocessLimit.title = `Configured maximum: ${formatCount(adminSettings.reprocess_max_limit)}`;
+
+  const backfillLimit = document.getElementById('backfill-limit');
+  backfillLimit.max = String(adminSettings.backfill_max_limit);
+  backfillLimit.value = String(adminSettings.backfill_default_limit);
+  backfillLimit.title = `Configured maximum: ${formatCount(adminSettings.backfill_max_limit)}`;
 }
 
 async function loadSummary() {
@@ -264,7 +299,8 @@ function updateSummaryDisplay() {
   const filteredTotal = currentFilter ? (statusCounts[currentFilter] ?? 0) : total;
   document.getElementById('stat-queue').textContent = `Queue: ${currentSummary.queue_depth ?? 0}`;
   document.getElementById('stat-active').textContent = `Active: ${currentSummary.active_jobs ?? 0}`;
-  document.getElementById('stat-total').textContent = `Documents: ${formatCount(total)}`;
+  document.getElementById('stat-total').textContent = `Process attempts: ${formatCount(total)}`;
+  document.getElementById('stat-results').textContent = `Result docs: ${formatCount(currentSummary.result_documents_count ?? 0)}`;
   document.getElementById('pager-summary').textContent =
     `${currentFilter ? STATUS_LABELS[currentFilter] : 'All documents'} total: ${formatCount(filteredTotal)}`;
 
@@ -399,8 +435,9 @@ async function runBackfill(dryRun) {
     document.getElementById('backfill-execute'),
   ];
 
-  if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
-    alert('Limit must be between 1 and 200.');
+  const maxLimit = Number(adminSettings.backfill_max_limit || 200);
+  if (!Number.isInteger(limit) || limit < 1 || limit > maxLimit) {
+    alert(`Limit must be between 1 and ${formatCount(maxLimit)}.`);
     return;
   }
   if (!dryRun && !confirm(`Execute search-index backfill for up to ${limit} document(s)?`)) {
@@ -408,49 +445,22 @@ async function runBackfill(dryRun) {
   }
 
   buttons.forEach(button => button.disabled = true);
-  resultEl.innerHTML = `<span class="badge badge-processing">${dryRun ? 'Dry run' : 'Backfill'} running…</span>`;
-  try {
-    const res = await fetch(`${API}/api/admin/search-index/backfill`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        dry_run: dryRun,
-        limit,
-        include_geocoding: includeGeocoding,
-        include_chunks: includeChunks,
-        force,
-      }),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      resultEl.innerHTML = `<div class="error-box">${esc(data.detail || 'Backfill failed')}</div>`;
-      return;
-    }
-    const verb = dryRun ? 'would update' : 'updated';
-    const updateCount = dryRun ? countStatus(data.results, 'would_update') : (data.updated ?? 0);
-    const scanned = data.candidate_documents_scanned ?? data.scanned ?? 0;
-    const scanLabel = data.force
-      ? 'result documents scanned'
-      : (data.include_geocoding ? 'stale/missing-geocode candidates scanned' : 'stale candidates scanned');
-    const emptyHint = (!data.force && scanned === 0)
-      ? `<div class="meta">No ${data.include_geocoding ? 'stale search-index or missing-geocode' : 'stale search-index'} candidates remain. Use Force regenerate to inspect or regenerate current documents.</div>`
-      : '';
-    resultEl.innerHTML = `
-      <div>
-        <span class="badge badge-completed">${dryRun ? 'Dry run complete' : 'Backfill complete'}</span>
-        ${scanLabel}: ${scanned}; ${verb} ${updateCount};
-        skipped ${data.skipped ?? 0}; failed ${data.failed ?? 0}; geocodes added ${data.geocoded_locations_added ?? 0}; generated embeddings ${data.generated_embeddings ?? 0}.
-      </div>
-      <div class="meta">${esc(data.message || '')}</div>
-      ${emptyHint}
-      <pre>${esc(JSON.stringify(data.results || [], null, 2))}</pre>`;
-    if (!dryRun) loadDashboard();
-  } catch (err) {
-    console.error('Backfill failed', err);
-    resultEl.innerHTML = `<div class="error-box">${esc(err.message || String(err))}</div>`;
-  } finally {
-    buttons.forEach(button => button.disabled = false);
-  }
+  await startAdminOperation({
+    endpoint: '/api/admin/search-index/backfill/start',
+    payload: {
+      dry_run: dryRun,
+      limit,
+      include_geocoding: includeGeocoding,
+      include_chunks: includeChunks,
+      force,
+    },
+    resultEl,
+    buttons,
+    actionLabel: dryRun ? 'Backfill dry run' : 'Backfill',
+    onComplete: () => {
+      if (!dryRun) loadDashboard();
+    },
+  });
 }
 
 async function runReprocess(dryRun) {
@@ -463,8 +473,9 @@ async function runReprocess(dryRun) {
     document.getElementById('reprocess-execute'),
   ];
 
-  if (!Number.isInteger(limit) || limit < 1 || limit > 5000) {
-    alert('Limit must be between 1 and 5000.');
+  const maxLimit = Number(adminSettings.reprocess_max_limit || 5000);
+  if (!Number.isInteger(limit) || limit < 1 || limit > maxLimit) {
+    alert(`Limit must be between 1 and ${formatCount(maxLimit)}.`);
     return;
   }
   if (!dryRun && !confirm(`Queue up to ${limit} ${sourceContainer} blob(s)${prefix ? ` under prefix "${prefix}"` : ''}?`)) {
@@ -472,41 +483,94 @@ async function runReprocess(dryRun) {
   }
 
   buttons.forEach(button => button.disabled = true);
-  resultEl.innerHTML = `<span class="badge badge-processing">${dryRun ? 'Dry run' : 'Requeue'} running…</span>`;
+  await startAdminOperation({
+    endpoint: '/api/admin/ingest/reprocess/start',
+    payload: {
+      dry_run: dryRun,
+      limit,
+      prefix,
+      source_container: sourceContainer,
+    },
+    resultEl,
+    buttons,
+    actionLabel: dryRun ? 'Requeue dry run' : 'Requeue',
+    onComplete: () => {
+      if (!dryRun) loadDashboard();
+    },
+  });
+}
+
+// --- Helpers ---
+async function startAdminOperation({ endpoint, payload, resultEl, buttons, actionLabel, onComplete }) {
+  resultEl.innerHTML = `<span class="badge badge-processing">${esc(actionLabel)} starting…</span>`;
   try {
-    const res = await fetch(`${API}/api/admin/ingest/reprocess`, {
+    const res = await fetch(`${API}${endpoint}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        dry_run: dryRun,
-        limit,
-        prefix,
-        source_container: sourceContainer,
-      }),
+      body: JSON.stringify(payload),
     });
-    const data = await res.json();
+    const operation = await res.json();
     if (!res.ok) {
-      resultEl.innerHTML = `<div class="error-box">${esc(data.detail || 'Requeue failed')}</div>`;
+      resultEl.innerHTML = `<div class="error-box">${esc(operation.detail || `${actionLabel} failed to start`)}</div>`;
+      buttons.forEach(button => button.disabled = false);
       return;
     }
-    resultEl.innerHTML = `
-      <div>
-        <span class="badge badge-completed">${dryRun ? 'Dry run complete' : 'Requeue complete'}</span>
-        source ${esc(data.source_container || sourceContainer)}; scanned ${data.blobs_scanned ?? 0}; would enqueue ${data.would_enqueue ?? 0}; enqueued ${data.enqueued ?? 0};
-        skipped active ${data.skipped_active ?? 0}; unsupported extensions ${data.unsupported_type_count ?? 0}.
-      </div>
-      <div class="meta">${esc(data.message || '')}</div>
-      <pre>${esc(JSON.stringify(data.results || [], null, 2))}</pre>`;
-    if (!dryRun) loadDashboard();
+    renderAdminOperation(operation, resultEl, actionLabel);
+    pollAdminOperation(operation.id, resultEl, buttons, actionLabel, onComplete);
   } catch (err) {
-    console.error('Requeue failed', err);
+    console.error(`${actionLabel} failed`, err);
     resultEl.innerHTML = `<div class="error-box">${esc(err.message || String(err))}</div>`;
-  } finally {
     buttons.forEach(button => button.disabled = false);
   }
 }
 
-// --- Helpers ---
+async function pollAdminOperation(operationId, resultEl, buttons, actionLabel, onComplete) {
+  try {
+    const res = await fetch(`${API}/api/admin/operations/${encodeURIComponent(operationId)}`);
+    const operation = await res.json();
+    if (!res.ok) throw new Error(operation.detail || 'Failed to load operation status');
+    renderAdminOperation(operation, resultEl, actionLabel);
+    if (['completed', 'failed', 'cancelled'].includes(operation.status)) {
+      buttons.forEach(button => button.disabled = false);
+      if (operation.status === 'completed' && onComplete) onComplete(operation);
+      return;
+    }
+    setTimeout(() => pollAdminOperation(operationId, resultEl, buttons, actionLabel, onComplete), OPERATION_POLL_MS);
+  } catch (err) {
+    console.error('Operation polling failed', err);
+    resultEl.innerHTML = `<div class="error-box">${esc(err.message || String(err))}</div>`;
+    buttons.forEach(button => button.disabled = false);
+  }
+}
+
+function renderAdminOperation(operation, resultEl, actionLabel) {
+  const status = operation.status || 'queued';
+  const badgeClass = status === 'completed' ? 'badge-completed' : (status === 'failed' ? 'badge-failed' : 'badge-processing');
+  const progress = operation.progress || {};
+  const summary = operation.summary || {};
+  const display = Object.keys(summary).length ? summary : progress;
+  const rows = Object.entries(display)
+    .filter(([key, value]) => typeof value !== 'object' && value !== null && value !== '')
+    .map(([key, value]) => `${key.replace(/_/g, ' ')}: ${esc(String(value))}`)
+    .join('; ');
+  const sample = operation.results || [];
+  const sampleHtml = sample.length
+    ? `<pre>${esc(JSON.stringify(sample, null, 2))}</pre>`
+    : '';
+  const truncated = operation.results_truncated
+    ? '<div class="meta">Results are sampled to keep operation status lightweight. Counts above are complete.</div>'
+    : '';
+  resultEl.innerHTML = `
+    <div>
+      <span class="badge ${badgeClass}">${esc(status)}</span>
+      ${esc(actionLabel)} operation ${esc(operation.id || '')}
+    </div>
+    <div class="meta">${esc(operation.message || '')}</div>
+    <div class="meta">${rows || 'Waiting for progress…'}</div>
+    ${truncated}
+    ${sampleHtml}`;
+}
+
 function esc(s) {
   const d = document.createElement('div');
   d.textContent = s;
