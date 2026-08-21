@@ -74,7 +74,7 @@ resource "azurerm_container_app" "main" {
       }
       env {
         name  = "AZURE_OPENAI_API_VERSION"
-        value = "2024-12-01-preview"
+        value = var.openai_api_version
       }
       env {
         name  = "AZURE_OPENAI_MODEL_NAME"
@@ -85,12 +85,44 @@ resource "azurerm_container_app" "main" {
         value = var.embedding_model_name
       }
       env {
+        name  = "AZURE_OPENAI_EMBEDDING_API_VERSION"
+        value = var.openai_embedding_api_version
+      }
+      env {
         name  = "COSMOS_ENDPOINT"
         value = azurerm_cosmosdb_account.main.endpoint
       }
       env {
         name  = "COSMOS_DATABASE_NAME"
         value = azurerm_cosmosdb_sql_database.main.name
+      }
+      env {
+        name  = "COSMOS_CONTAINER_OPERATIONS"
+        value = azurerm_cosmosdb_sql_container.operations.name
+      }
+      env {
+        name  = "SEARCH_DEFAULT_TOP"
+        value = tostring(var.search_default_top)
+      }
+      env {
+        name  = "SEARCH_MAX_TOP"
+        value = tostring(var.search_max_top)
+      }
+      env {
+        name  = "BACKFILL_DEFAULT_LIMIT"
+        value = tostring(var.backfill_default_limit)
+      }
+      env {
+        name  = "BACKFILL_MAX_LIMIT"
+        value = tostring(var.backfill_max_limit)
+      }
+      env {
+        name  = "REPROCESS_DEFAULT_LIMIT"
+        value = tostring(var.reprocess_default_limit)
+      }
+      env {
+        name  = "REPROCESS_MAX_LIMIT"
+        value = tostring(var.reprocess_max_limit)
       }
       env {
         name  = "STORAGE_CONTAINER_INGEST"
@@ -107,6 +139,10 @@ resource "azurerm_container_app" "main" {
       env {
         name  = "STORAGE_CONTAINER_ORIGINAL"
         value = "originaldocument"
+      }
+      env {
+        name  = "STORAGE_CONTAINER_FAILED"
+        value = "failed"
       }
       env {
         name  = "LOG_LEVEL"

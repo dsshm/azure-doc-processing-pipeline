@@ -6,7 +6,7 @@ into a single unified model.
 
 from __future__ import annotations
 
-from typing import List, Literal, Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -67,6 +67,19 @@ class PageSummary(BaseModel):
     key_points: list[str] = Field(default_factory=list)
 
 
+class GeocodedLocation(BaseModel):
+    """Latitude/longitude enrichment for extracted location entities."""
+
+    query: str = Field(..., description="Location text sent to Azure Maps.")
+    latitude: float = Field(..., description="Latitude returned by Azure Maps.")
+    longitude: float = Field(..., description="Longitude returned by Azure Maps.")
+    formatted_address: str = Field(default="", description="Best formatted address from the search result.")
+    display_name: str = Field(default="", description="POI or address label from the search result.")
+    result_type: str = Field(default="", description="Azure Maps result type, such as POI or Point Address.")
+    score: Optional[float] = Field(default=None, description="Azure Maps fuzzy-search score.")
+    source: str = Field(default="azure_maps_fuzzy_search")
+
+
 class EntityData(BaseModel):
     """Flat entity lists used in DocumentSummary keyFields."""
 
@@ -75,6 +88,7 @@ class EntityData(BaseModel):
     dates: list[str] = Field(default_factory=list)
     amounts: list[str] = Field(default_factory=list)
     locations: list[str] = Field(default_factory=list)
+    geocoded_locations: list[GeocodedLocation] = Field(default_factory=list)
 
 
 class DocumentKeyFields(BaseModel):
@@ -96,6 +110,7 @@ class DocumentChunk(BaseModel):
     chunk_index: int = Field(..., description="0-based position within the document.")
     text: str = Field(..., description="Raw text of the chunk.")
     vector: Optional[list[float]] = Field(default=None, description="Embedding of the chunk text.")
+    vector_metadata: Optional[dict] = Field(default=None, description="Embedding provenance for vector.")
 
 
 # ---------------------------------------------------------------------------
@@ -127,9 +142,13 @@ class DocumentAnalysisResult(BaseModel):
     key_fields: DocumentKeyFields = Field(default_factory=DocumentKeyFields)
 
     # --- vector embeddings ---
-    summary_vector: Optional[list[float]] = Field(default=None, description="Embedding of the summary field.")
+    search_text: str = Field(default="", description="Normalized text used for full-text and hybrid search.")
+    summary_vector: Optional[list[float]] = Field(default=None, description="Embedding of search_text when present, otherwise summary.")
+    summary_vector_metadata: Optional[dict] = Field(default=None, description="Embedding provenance for summary_vector.")
     purpose_vector: Optional[list[float]] = Field(default=None, description="Embedding of document_purpose.")
+    purpose_vector_metadata: Optional[dict] = Field(default=None, description="Embedding provenance for purpose_vector.")
     chunks: Optional[list[DocumentChunk]] = Field(default=None, description="Text chunks with embeddings for granular retrieval.")
+    search_index_metadata: dict = Field(default_factory=dict, description="Search index backfill/version metadata.")
 
     # --- processing metadata ---
     metadata: dict = Field(default_factory=dict)

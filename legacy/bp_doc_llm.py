@@ -190,7 +190,7 @@ async def analyze_chunk_with_llm(chunk: str, chunk_index: int, total_chunks: int
                 {"role": "user", "content": user_prompt}
             ],
             temperature=0.1,
-            max_tokens=1000,
+            max_completion_tokens=1000,
             response_format={
                 "type": "json_schema", 
                 "json_schema": {
@@ -319,7 +319,7 @@ async def reduce_chunk_analyses(chunk_results: List[Dict[str, Any]], original_fi
                 {"role": "user", "content": user_prompt}
             ],
             temperature=0.1,
-            max_tokens=2000,
+            max_completion_tokens=2000,
             response_format={
                 "type": "json_schema", 
                 "json_schema": {

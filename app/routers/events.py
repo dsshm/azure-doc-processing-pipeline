@@ -83,6 +83,11 @@ async def _handle_blob_created(event: dict[str, Any], request: Request) -> None:
     # Persist to Cosmos + enqueue
     worker = request.app.state.worker
     cosmos = request.app.state.cosmos
+    active_job = cosmos.find_active_job_by_blob_name(blob_name)
+    if active_job:
+        logger.info("Skipping blob %s because active job %s already exists", blob_name, active_job.get("id"))
+        return
+
     cosmos.create_job(job)
     await worker.enqueue(job)
 

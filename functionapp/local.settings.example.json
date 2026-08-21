@@ -1,0 +1,15 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+    "CONTAINER_APP_BASE_URL": "https://<container-app-fqdn>",
+    "AZURE_OPENAI_ENDPOINT": "https://<openai-account>.openai.azure.com/",
+    "AZURE_OPENAI_EMBEDDING_MODEL": "text-embedding-3-small",
+    "AZURE_OPENAI_EMBEDDING_API_VERSION": "2024-12-01-preview",
+    "SEARCH_DEFAULT_TOP": "30",
+    "SEARCH_MAX_TOP": "1000",
+    "SEARCH_DEFAULT_VECTOR_FIELD": "summary_vector",
+    "REQUEST_TIMEOUT_SECONDS": "30"
+  }
+}

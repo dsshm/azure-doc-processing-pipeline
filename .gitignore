@@ -139,6 +139,9 @@ local.settings.json
 .azure/
 .azurefunctions/
 
+# Bicep build output
+bicep/*.json
+
 # Logs
 logs
 *.log
@@ -243,3 +246,4 @@ tfplan
 .python_packages
 
 .vscode/
+local.main.bicepparam

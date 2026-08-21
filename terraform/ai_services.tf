@@ -26,8 +26,8 @@ resource "azurerm_cognitive_deployment" "gpt4o" {
   }
 
   sku {
-    name     = "GlobalStandard"
-    capacity = 30
+    name     = var.openai_model_sku_name
+    capacity = var.openai_model_capacity
   }
 }
 
@@ -42,8 +42,8 @@ resource "azurerm_cognitive_deployment" "embedding" {
   }
 
   sku {
-    name     = "Standard"
-    capacity = 30
+    name     = var.embedding_model_sku_name
+    capacity = var.embedding_model_capacity
   }
 }
 

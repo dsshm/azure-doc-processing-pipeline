@@ -47,6 +47,23 @@ resource "azurerm_subnet" "ai_services" {
   default_outbound_access_enabled = false
 }
 
+# --- Shared App Service regional VNet integration subnet ---
+resource "azurerm_subnet" "logic_app_integration" {
+  name                            = "snet-logic-app-integration"
+  resource_group_name             = azurerm_resource_group.main.name
+  virtual_network_name            = azurerm_virtual_network.main.name
+  address_prefixes                = [var.logic_app_integration_subnet_cidr]
+  default_outbound_access_enabled = false
+
+  delegation {
+    name = "logic-app-integration-delegation"
+    service_delegation {
+      name    = "Microsoft.Web/serverFarms"
+      actions = ["Microsoft.Network/virtualNetworks/subnets/action"]
+    }
+  }
+}
+
 # --- NSGs ---
 resource "azurerm_network_security_group" "container_apps" {
   name                = "nsg-container-apps-${local.name_suffix}"
@@ -82,4 +99,16 @@ resource "azurerm_network_security_group" "ai_services" {
 resource "azurerm_subnet_network_security_group_association" "ai_services" {
   subnet_id                 = azurerm_subnet.ai_services.id
   network_security_group_id = azurerm_network_security_group.ai_services.id
+}
+
+resource "azurerm_network_security_group" "logic_app_integration" {
+  name                = "nsg-logic-app-integration-${local.name_suffix}"
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
+  tags                = local.common_tags
+}
+
+resource "azurerm_subnet_network_security_group_association" "logic_app_integration" {
+  subnet_id                 = azurerm_subnet.logic_app_integration.id
+  network_security_group_id = azurerm_network_security_group.logic_app_integration.id
 }

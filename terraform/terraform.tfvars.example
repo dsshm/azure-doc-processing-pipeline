@@ -4,8 +4,40 @@ location     = "eastus2"
 project_name = "docpipeline"
 environment  = "dev"
 
+# Public IPs allowed to shared limited public endpoints such as Storage and NSP.
+allowed_ip_addresses = [
+  "71.200.56.126"
+]
+
+# Additional Cosmos-only data-plane public IPs.
+cosmos_allowed_ip_addresses = []
+
+# Optional network overrides.
+# logic_app_integration_subnet_cidr = "10.0.4.0/26"
+
 # After first ACR push, update this:
 # container_image = "docpipeline:v1.0.0"
+
+# Azure OpenAI API versions. Keep embeddings on a version that supports
+# text-embedding-3-small data-plane calls while chat can use GPT-5.1 preview APIs.
+# openai_api_version           = "2025-04-01-preview"
+# openai_embedding_api_version = "2024-12-01-preview"
+
+# Search APIs default to 30 results and allow callers to pass top up to this cap.
+# search_default_top = 30
+# search_max_top     = 1000
+
+# Search-index backfill/reprocess batches are intentionally bounded.
+# backfill_default_limit = 25
+# backfill_max_limit     = 200
+# reprocess_default_limit = 100
+# reprocess_max_limit     = 5000
+
+# Logic App Standard search facade.
+# logic_app_sku_name = "WS1"
+
+# Azure Functions search facade.
+# search_function_sku_name = "EP1"
 
 tags = {
   owner = "your-team"

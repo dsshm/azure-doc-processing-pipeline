@@ -40,11 +40,16 @@ class LLMPlugin:
         api_version: str | None = None,
         model_name: str | None = None,
         embedding_model: str | None = None,
+        embedding_api_version: str | None = None,
     ):
         self._endpoint = endpoint or os.getenv("AZURE_OPENAI_ENDPOINT", "")
-        self._api_version = api_version or os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
-        self._model = model_name or os.getenv("AZURE_OPENAI_MODEL_NAME", "gpt-4o")
-        self._embedding_model = embedding_model or os.getenv("AZURE_OPENAI_EMBEDDING_MODEL", "text-embedding-ada-002")
+        self._api_version = api_version or os.getenv("AZURE_OPENAI_API_VERSION", "2025-04-01-preview")
+        self._model = model_name or os.getenv("AZURE_OPENAI_MODEL_NAME", "gpt-5.1")
+        self._embedding_model = embedding_model or os.getenv("AZURE_OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
+        self._embedding_api_version = (
+            embedding_api_version
+            or os.getenv("AZURE_OPENAI_EMBEDDING_API_VERSION", "2024-12-01-preview")
+        )
 
         credential = DefaultAzureCredential()
         token_provider = get_bearer_token_provider(credential, "https://cognitiveservices.azure.com/.default")
@@ -54,10 +59,23 @@ class LLMPlugin:
             azure_ad_token_provider=token_provider,
             api_version=self._api_version,
         )
+        self.embedding_client = openai.AzureOpenAI(
+            azure_endpoint=self._endpoint,
+            azure_ad_token_provider=token_provider,
+            api_version=self._embedding_api_version,
+        )
 
         # Summariser settings
-        self._max_tokens_per_request = 15_000
+        self._max_input_tokens_per_request = 15_000
         self._chunk_size = 10  # pages per hierarchical chunk
+
+    @property
+    def embedding_model(self) -> str:
+        return self._embedding_model
+
+    @property
+    def embedding_api_version(self) -> str:
+        return self._embedding_api_version
 
     # ------------------------------------------------------------------
     # Page‑level analysis
@@ -84,7 +102,7 @@ class LLMPlugin:
             "4. If the source language is not English, provide a translation.\n"
         )
 
-        response = self.client.chat.completions.create(
+        response = self._create_chat_completion(
             model=self._model,
             messages=[
                 {
@@ -104,7 +122,7 @@ class LLMPlugin:
                 },
             },
             temperature=0.2,
-            max_tokens=4000,
+            max_completion_tokens=4000,
         )
 
         try:
@@ -152,14 +170,14 @@ class LLMPlugin:
         )
         user_prompt = f"Chunk {chunk_index + 1} of {total_chunks}:\n\n{chunk_text}\n\nAnalyze this text chunk."
 
-        response = self.client.chat.completions.create(
+        response = self._create_chat_completion(
             model=self._model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
             temperature=0.1,
-            max_tokens=1000,
+            max_completion_tokens=1000,
             response_format={
                 "type": "json_schema",
                 "json_schema": {
@@ -294,7 +312,7 @@ class LLMPlugin:
         self,
         text: Annotated[str, "Text to embed"],
     ) -> list[float]:
-        resp = self.client.embeddings.create(model=self._embedding_model, input=text.strip())
+        resp = self.embedding_client.embeddings.create(model=self._embedding_model, input=text.strip())
         return resp.data[0].embedding
 
     # ------------------------------------------------------------------
@@ -323,7 +341,7 @@ class LLMPlugin:
         est = self._estimate_tokens(combined)
 
         try:
-            if est > self._max_tokens_per_request:
+            if est > self._max_input_tokens_per_request:
                 logger.info("Large document (%d tokens). Hierarchical reduction.", est)
                 return self._hierarchical_reduce(summaries_text, total_pages)
             logger.info("Standard reduction (%d tokens).", est)
@@ -342,14 +360,14 @@ class LLMPlugin:
             "Synthesize into a cohesive 2‑3 paragraph summary. Focus on purpose, key info, overall content. "
             "Remove redundancy and page references. Write a natural narrative."
         )
-        resp = self.client.chat.completions.create(
+        resp = self._create_chat_completion(
             model=self._model,
             messages=[
                 {"role": "system", "content": "You are an expert document analyst who creates clear, concise summaries."},
                 {"role": "user", "content": prompt},
             ],
             temperature=0.3,
-            max_tokens=800,
+            max_completion_tokens=800,
         )
         return resp.choices[0].message.content.strip()
 
@@ -366,14 +384,14 @@ class LLMPlugin:
                 "Provide a concise 1‑2 paragraph summary capturing key info."
             )
             try:
-                resp = self.client.chat.completions.create(
+                resp = self._create_chat_completion(
                     model=self._model,
                     messages=[
                         {"role": "system", "content": "You are an expert document analyst."},
                         {"role": "user", "content": prompt},
                     ],
                     temperature=0.3,
-                    max_tokens=400,
+                    max_completion_tokens=400,
                 )
                 intermediates.append(f"Pages {sp}‑{ep}: {resp.choices[0].message.content.strip()}")
             except Exception as exc:
@@ -441,14 +459,14 @@ class LLMPlugin:
         )
 
         try:
-            resp = self.client.chat.completions.create(
+            resp = self._create_chat_completion(
                 model=self._model,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
                 temperature=0.1,
-                max_tokens=1500,
+                max_completion_tokens=1500,
                 response_format={"type": "json_object"},
             )
             return json.loads(resp.choices[0].message.content.strip())
@@ -465,3 +483,12 @@ class LLMPlugin:
                     "actionable_items": [],
                 },
             }
+
+    def _create_chat_completion(self, **kwargs: Any) -> Any:
+        if self._uses_reasoning_chat_model():
+            kwargs.pop("temperature", None)
+        return self.client.chat.completions.create(**kwargs)
+
+    def _uses_reasoning_chat_model(self) -> bool:
+        normalized = self._model.lower().replace(".", "").replace("-", "")
+        return normalized.startswith(("gpt5", "gpt51", "o1", "o3", "o4"))

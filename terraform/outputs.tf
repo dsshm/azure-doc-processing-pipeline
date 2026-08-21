@@ -34,6 +34,22 @@ output "container_app_url" {
   value = "https://${azurerm_container_app.main.ingress[0].fqdn}"
 }
 
+output "logic_app_name" {
+  value = azurerm_logic_app_standard.search.name
+}
+
+output "logic_app_url" {
+  value = "https://${azurerm_logic_app_standard.search.default_hostname}"
+}
+
+output "search_function_app_name" {
+  value = azurerm_linux_function_app.search.name
+}
+
+output "search_function_app_url" {
+  value = "https://${azurerm_linux_function_app.search.default_hostname}"
+}
+
 output "log_analytics_workspace_id" {
   value = azurerm_log_analytics_workspace.main.id
 }

@@ -50,7 +50,28 @@
   .retry-btn:hover,.delete-btn:hover{opacity:.85}
   .meta{font-size:.8rem;color:var(--muted);margin-top:.5rem}
 
+  .admin-card{background:var(--card);border-radius:8px;padding:1rem 1.25rem;margin-bottom:1rem;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+  .admin-card h2{font-size:1rem;margin-bottom:.35rem}
+  .admin-card p{font-size:.85rem;color:var(--muted);margin-bottom:.75rem}
+  .admin-controls{display:flex;gap:.75rem;align-items:center;flex-wrap:wrap}
+  .admin-controls label{font-size:.85rem;color:var(--text)}
+  .admin-controls input[type="number"]{width:5rem;padding:.35rem;border:1px solid var(--border);border-radius:4px}
+  .admin-controls input[type="text"]{width:12rem;padding:.35rem;border:1px solid var(--border);border-radius:4px}
+  .admin-controls input[type="checkbox"]{margin-right:.25rem}
+  .admin-controls select{padding:.35rem;border:1px solid var(--border);border-radius:4px;background:var(--card)}
+  .admin-btn{color:#fff;border:none;padding:.4rem 1rem;border-radius:4px;cursor:pointer;font-size:.85rem;background:var(--primary)}
+  .admin-btn.execute{background:var(--danger)}
+  .admin-btn:disabled{opacity:.55;cursor:not-allowed}
+  #backfill-result,#reprocess-result{margin-top:.75rem;font-size:.85rem}
+  #backfill-result pre,#reprocess-result pre{margin-top:.5rem;padding:.75rem;background:#f3f5f9;border:1px solid var(--border);border-radius:4px;white-space:pre-wrap;max-height:20rem;overflow:auto}
+
   .empty{text-align:center;padding:3rem;color:var(--muted)}
+  .pager{display:flex;justify-content:space-between;align-items:center;gap:.75rem;margin-top:.75rem;flex-wrap:wrap;font-size:.85rem;color:var(--muted)}
+  .pager-controls{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap}
+  .pager button{border:1px solid var(--border);background:var(--card);padding:.35rem .7rem;border-radius:4px;cursor:pointer;font-size:.85rem}
+  .pager button:disabled{opacity:.55;cursor:not-allowed}
+  .pager select{padding:.3rem;border:1px solid var(--border);border-radius:4px;background:var(--card)}
+  .filter-count{opacity:.7;margin-left:.2rem}
   .refresh-note{font-size:.75rem;color:var(--muted);margin-top:.5rem;text-align:right}
 </style>
 </head>
@@ -61,6 +82,7 @@
     <span id="stat-queue">Queue: 0</span>
     <span id="stat-active">Active: 0</span>
     <span id="stat-total">Total: 0</span>
+    <span id="stat-results">Result docs: 0</span>
   </div>
 </header>
 <main>
@@ -74,12 +96,44 @@
     <div class="meta" id="detail-meta"></div>
   </div>
 
+  <section class="admin-card" aria-labelledby="reprocess-title">
+    <h2 id="reprocess-title">Ingest Requeue</h2>
+    <p>Requeue blobs that are still sitting in ingest when Event Grid missed the original upload event, or in failed when files were manually staged for another attempt. Run a dry-run first, then execute bounded batches until no matching blobs remain.</p>
+    <div class="admin-controls">
+      <label>Source
+        <select id="reprocess-source">
+          <option value="ingest">ingest</option>
+          <option value="failed">failed</option>
+        </select>
+      </label>
+      <label>Limit <input id="reprocess-limit" type="number" min="1" max="5000" value="100" /></label>
+      <label>Prefix <input id="reprocess-prefix" type="text" placeholder="optional/path/" /></label>
+      <button id="reprocess-dry-run" class="admin-btn" onclick="runReprocess(true)">Dry run</button>
+      <button id="reprocess-execute" class="admin-btn execute" onclick="runReprocess(false)">Execute</button>
+    </div>
+    <div id="reprocess-result"></div>
+  </section>
+
+  <section class="admin-card" aria-labelledby="backfill-title">
+    <h2 id="backfill-title">Search Index Backfill</h2>
+    <p>Backfill missing Azure Maps lat/lon, rebuild missing search_text, and regenerate vectors missing current embedding metadata. Run a dry-run first, then execute a bounded batch.</p>
+    <div class="admin-controls">
+      <label>Limit <input id="backfill-limit" type="number" min="1" max="200" value="25" /></label>
+      <label><input id="backfill-include-geocoding" type="checkbox" checked /> Include geocoding</label>
+      <label><input id="backfill-include-chunks" type="checkbox" checked /> Include chunks</label>
+      <label><input id="backfill-force" type="checkbox" /> Force regenerate</label>
+      <button id="backfill-dry-run" class="admin-btn" onclick="runBackfill(true)">Dry run</button>
+      <button id="backfill-execute" class="admin-btn execute" onclick="runBackfill(false)">Execute</button>
+    </div>
+    <div id="backfill-result"></div>
+  </section>
+
   <div class="filters" id="filters">
-    <button class="active" data-filter="">All</button>
-    <button data-filter="queued">Queued</button>
-    <button data-filter="processing">Processing</button>
-    <button data-filter="completed">Completed</button>
-    <button data-filter="failed">Failed</button>
+    <button class="active" data-filter="">All <span class="filter-count" data-count="all"></span></button>
+    <button data-filter="queued">Queued <span class="filter-count" data-count="queued"></span></button>
+    <button data-filter="processing">Processing <span class="filter-count" data-count="processing"></span></button>
+    <button data-filter="completed">Completed <span class="filter-count" data-count="completed"></span></button>
+    <button data-filter="failed">Failed <span class="filter-count" data-count="failed"></span></button>
   </div>
 
   <table>
@@ -88,39 +142,138 @@
     </thead>
     <tbody id="job-list"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
   </table>
-  <div class="refresh-note">Auto-refreshes every 30 seconds</div>
+  <div class="pager" aria-label="Job pagination">
+    <div class="pager-controls">
+      <label>Page size
+        <select id="page-size">
+          <option value="25">25</option>
+          <option value="50">50</option>
+          <option value="100" selected>100</option>
+          <option value="200">200</option>
+        </select>
+      </label>
+      <span id="pager-summary">Loading…</span>
+    </div>
+    <div class="pager-controls">
+      <button id="prev-page" onclick="previousPage()" disabled>Previous</button>
+      <span id="page-number">Page 1</span>
+      <button id="next-page" onclick="nextPage()" disabled>Next</button>
+    </div>
+  </div>
+  <div class="refresh-note">Rows auto-refresh every 30 seconds; total counts refresh every 5 minutes or after actions</div>
 </main>
 
 <script>
 const API = '';
 let currentFilter = '';
 let refreshTimer = null;
+let currentPageIndex = 0;
+let currentPageTokens = [''];
+let nextPageToken = null;
+let currentSummary = { total_count: 0, status_counts: {} };
+let lastSummaryRefresh = 0;
+let adminSettings = {
+  backfill_default_limit: 25,
+  backfill_max_limit: 200,
+  reprocess_default_limit: 100,
+  reprocess_max_limit: 5000,
+};
+
+const JOB_REFRESH_MS = 30000;
+const SUMMARY_REFRESH_MS = 300000;
+const OPERATION_POLL_MS = 2000;
+
+const STATUS_LABELS = {
+  queued: 'Queued',
+  processing: 'Processing',
+  completed: 'Completed',
+  failed: 'Failed',
+};
 
 // --- Filters ---
 document.getElementById('filters').addEventListener('click', e => {
-  if (e.target.tagName !== 'BUTTON') return;
+  const button = e.target.closest('button');
+  if (!button) return;
   document.querySelectorAll('.filters button').forEach(b => b.classList.remove('active'));
-  e.target.classList.add('active');
-  currentFilter = e.target.dataset.filter;
-  loadJobs();
+  button.classList.add('active');
+  currentFilter = button.dataset.filter;
+  resetPagination();
+  loadDashboard();
+});
+
+document.getElementById('page-size').addEventListener('change', () => {
+  resetPagination();
+  loadDashboard();
 });
 
 // --- Load jobs ---
+async function loadDashboard(options = {}) {
+  const refreshSummary = options.refreshSummary ?? true;
+  try {
+    await loadAdminSettings();
+    if (refreshSummary) await loadSummary();
+    await loadJobs();
+  } catch (err) {
+    console.error('Failed to load dashboard', err);
+    document.getElementById('job-list').innerHTML =
+      `<tr><td colspan="5" class="empty">Failed to load dashboard: ${esc(err.message || String(err))}</td></tr>`;
+  }
+}
+
+async function loadAdminSettings() {
+  if (adminSettings.loaded) return;
+
+  try {
+    const res = await fetch(`${API}/api/admin/settings`);
+    if (!res.ok) throw new Error('Failed to load admin settings');
+    adminSettings = { ...adminSettings, ...(await res.json()), loaded: true };
+    applyAdminSettings();
+  } catch (err) {
+    console.warn('Using default admin UI limits because settings could not be loaded', err);
+    adminSettings.loaded = true;
+  }
+}
+
+function applyAdminSettings() {
+  const reprocessLimit = document.getElementById('reprocess-limit');
+  reprocessLimit.max = String(adminSettings.reprocess_max_limit);
+  reprocessLimit.value = String(adminSettings.reprocess_default_limit);
+  reprocessLimit.title = `Configured maximum: ${formatCount(adminSettings.reprocess_max_limit)}`;
+
+  const backfillLimit = document.getElementById('backfill-limit');
+  backfillLimit.max = String(adminSettings.backfill_max_limit);
+  backfillLimit.value = String(adminSettings.backfill_default_limit);
+  backfillLimit.title = `Configured maximum: ${formatCount(adminSettings.backfill_max_limit)}`;
+}
+
+async function loadSummary() {
+  const res = await fetch(`${API}/api/status/summary`);
+  if (!res.ok) throw new Error('Failed to load job summary');
+  currentSummary = await res.json();
+  lastSummaryRefresh = Date.now();
+  updateSummaryDisplay();
+}
+
 async function loadJobs() {
   try {
-    const url = currentFilter
-      ? `${API}/api/status?status=${currentFilter}&limit=100`
-      : `${API}/api/status?limit=100`;
-    const res = await fetch(url);
+    const limit = Number(document.getElementById('page-size').value || 100);
+    const params = new URLSearchParams({ limit: String(limit) });
+    const continuationToken = currentPageTokens[currentPageIndex] || '';
+    if (currentFilter) params.set('status', currentFilter);
+    if (continuationToken) params.set('continuation_token', continuationToken);
+
+    const res = await fetch(`${API}/api/status?${params.toString()}`);
     const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Failed to load jobs');
 
     document.getElementById('stat-queue').textContent = `Queue: ${data.queue_depth ?? 0}`;
     document.getElementById('stat-active').textContent = `Active: ${data.active_jobs ?? 0}`;
-    document.getElementById('stat-total').textContent = `Total: ${data.count ?? 0}`;
+    nextPageToken = data.continuation_token || null;
 
     const tbody = document.getElementById('job-list');
     if (!data.jobs || data.jobs.length === 0) {
       tbody.innerHTML = '<tr><td colspan="5" class="empty">No jobs found</td></tr>';
+      updatePagination(0);
       return;
     }
 
@@ -132,9 +285,68 @@ async function loadJobs() {
         <td>${fmtDate(j.updated_at)}</td>
         <td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(j.error_message || '')}</td>
       </tr>`).join('');
+    updatePagination(data.page_count ?? data.count ?? data.jobs.length);
   } catch (err) {
     console.error('Failed to load jobs', err);
+    document.getElementById('job-list').innerHTML =
+      `<tr><td colspan="5" class="empty">Failed to load jobs: ${esc(err.message || String(err))}</td></tr>`;
   }
+}
+
+function updateSummaryDisplay() {
+  const statusCounts = currentSummary.status_counts || {};
+  const total = currentSummary.total_count ?? 0;
+  const filteredTotal = currentFilter ? (statusCounts[currentFilter] ?? 0) : total;
+  document.getElementById('stat-queue').textContent = `Queue: ${currentSummary.queue_depth ?? 0}`;
+  document.getElementById('stat-active').textContent = `Active: ${currentSummary.active_jobs ?? 0}`;
+  document.getElementById('stat-total').textContent = `Process attempts: ${formatCount(total)}`;
+  document.getElementById('stat-results').textContent = `Result docs: ${formatCount(currentSummary.result_documents_count ?? 0)}`;
+  document.getElementById('pager-summary').textContent =
+    `${currentFilter ? STATUS_LABELS[currentFilter] : 'All documents'} total: ${formatCount(filteredTotal)}`;
+
+  setFilterCount('all', total);
+  Object.keys(STATUS_LABELS).forEach(status => setFilterCount(status, statusCounts[status] ?? 0));
+}
+
+function setFilterCount(status, count) {
+  const countEl = document.querySelector(`[data-count="${status}"]`);
+  if (countEl) countEl.textContent = `(${formatCount(count)})`;
+}
+
+function updatePagination(pageCount) {
+  const limit = Number(document.getElementById('page-size').value || 100);
+  const statusCounts = currentSummary.status_counts || {};
+  const filteredTotal = currentFilter ? (statusCounts[currentFilter] ?? 0) : (currentSummary.total_count ?? 0);
+  const firstShown = pageCount > 0 ? currentPageIndex * limit + 1 : 0;
+  const lastShown = pageCount > 0 ? currentPageIndex * limit + pageCount : 0;
+  const rangeText = pageCount > 0
+    ? `Showing ${formatCount(firstShown)}-${formatCount(lastShown)} of ${formatCount(filteredTotal)}`
+    : `Showing 0 of ${formatCount(filteredTotal)}`;
+
+  document.getElementById('pager-summary').textContent =
+    `${rangeText}${currentFilter ? ` ${STATUS_LABELS[currentFilter].toLowerCase()}` : ' documents'}`;
+  document.getElementById('page-number').textContent = `Page ${formatCount(currentPageIndex + 1)}`;
+  document.getElementById('prev-page').disabled = currentPageIndex === 0;
+  document.getElementById('next-page').disabled = !nextPageToken;
+}
+
+function resetPagination() {
+  currentPageIndex = 0;
+  currentPageTokens = [''];
+  nextPageToken = null;
+}
+
+function nextPage() {
+  if (!nextPageToken) return;
+  currentPageTokens[currentPageIndex + 1] = nextPageToken;
+  currentPageIndex += 1;
+  loadJobs();
+}
+
+function previousPage() {
+  if (currentPageIndex === 0) return;
+  currentPageIndex -= 1;
+  loadJobs();
 }
 
 // --- Detail ---
@@ -190,7 +402,7 @@ async function retryJob(jobId) {
   try {
     await fetch(`${API}/api/status/${jobId}/retry`, { method: 'POST' });
     closeDetail();
-    loadJobs();
+    loadDashboard();
   } catch (err) {
     console.error('Retry failed', err);
   }
@@ -206,13 +418,159 @@ async function deleteJob(jobId) {
       return;
     }
     closeDetail();
-    loadJobs();
+    loadDashboard();
   } catch (err) {
     console.error('Delete failed', err);
   }
 }
 
+async function runBackfill(dryRun) {
+  const limit = Number(document.getElementById('backfill-limit').value || 25);
+  const includeGeocoding = document.getElementById('backfill-include-geocoding').checked;
+  const includeChunks = document.getElementById('backfill-include-chunks').checked;
+  const force = document.getElementById('backfill-force').checked;
+  const resultEl = document.getElementById('backfill-result');
+  const buttons = [
+    document.getElementById('backfill-dry-run'),
+    document.getElementById('backfill-execute'),
+  ];
+
+  const maxLimit = Number(adminSettings.backfill_max_limit || 200);
+  if (!Number.isInteger(limit) || limit < 1 || limit > maxLimit) {
+    alert(`Limit must be between 1 and ${formatCount(maxLimit)}.`);
+    return;
+  }
+  if (!dryRun && !confirm(`Execute search-index backfill for up to ${limit} document(s)?`)) {
+    return;
+  }
+
+  buttons.forEach(button => button.disabled = true);
+  await startAdminOperation({
+    endpoint: '/api/admin/search-index/backfill/start',
+    payload: {
+      dry_run: dryRun,
+      limit,
+      include_geocoding: includeGeocoding,
+      include_chunks: includeChunks,
+      force,
+    },
+    resultEl,
+    buttons,
+    actionLabel: dryRun ? 'Backfill dry run' : 'Backfill',
+    onComplete: () => {
+      if (!dryRun) loadDashboard();
+    },
+  });
+}
+
+async function runReprocess(dryRun) {
+  const sourceContainer = document.getElementById('reprocess-source').value || 'ingest';
+  const limit = Number(document.getElementById('reprocess-limit').value || 100);
+  const prefix = document.getElementById('reprocess-prefix').value || '';
+  const resultEl = document.getElementById('reprocess-result');
+  const buttons = [
+    document.getElementById('reprocess-dry-run'),
+    document.getElementById('reprocess-execute'),
+  ];
+
+  const maxLimit = Number(adminSettings.reprocess_max_limit || 5000);
+  if (!Number.isInteger(limit) || limit < 1 || limit > maxLimit) {
+    alert(`Limit must be between 1 and ${formatCount(maxLimit)}.`);
+    return;
+  }
+  if (!dryRun && !confirm(`Queue up to ${limit} ${sourceContainer} blob(s)${prefix ? ` under prefix "${prefix}"` : ''}?`)) {
+    return;
+  }
+
+  buttons.forEach(button => button.disabled = true);
+  await startAdminOperation({
+    endpoint: '/api/admin/ingest/reprocess/start',
+    payload: {
+      dry_run: dryRun,
+      limit,
+      prefix,
+      source_container: sourceContainer,
+    },
+    resultEl,
+    buttons,
+    actionLabel: dryRun ? 'Requeue dry run' : 'Requeue',
+    onComplete: () => {
+      if (!dryRun) loadDashboard();
+    },
+  });
+}
+
 // --- Helpers ---
+async function startAdminOperation({ endpoint, payload, resultEl, buttons, actionLabel, onComplete }) {
+  resultEl.innerHTML = `<span class="badge badge-processing">${esc(actionLabel)} starting…</span>`;
+  try {
+    const res = await fetch(`${API}${endpoint}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const operation = await res.json();
+    if (!res.ok) {
+      resultEl.innerHTML = `<div class="error-box">${esc(operation.detail || `${actionLabel} failed to start`)}</div>`;
+      buttons.forEach(button => button.disabled = false);
+      return;
+    }
+    renderAdminOperation(operation, resultEl, actionLabel);
+    pollAdminOperation(operation.id, resultEl, buttons, actionLabel, onComplete);
+  } catch (err) {
+    console.error(`${actionLabel} failed`, err);
+    resultEl.innerHTML = `<div class="error-box">${esc(err.message || String(err))}</div>`;
+    buttons.forEach(button => button.disabled = false);
+  }
+}
+
+async function pollAdminOperation(operationId, resultEl, buttons, actionLabel, onComplete) {
+  try {
+    const res = await fetch(`${API}/api/admin/operations/${encodeURIComponent(operationId)}`);
+    const operation = await res.json();
+    if (!res.ok) throw new Error(operation.detail || 'Failed to load operation status');
+    renderAdminOperation(operation, resultEl, actionLabel);
+    if (['completed', 'failed', 'cancelled'].includes(operation.status)) {
+      buttons.forEach(button => button.disabled = false);
+      if (operation.status === 'completed' && onComplete) onComplete(operation);
+      return;
+    }
+    setTimeout(() => pollAdminOperation(operationId, resultEl, buttons, actionLabel, onComplete), OPERATION_POLL_MS);
+  } catch (err) {
+    console.error('Operation polling failed', err);
+    resultEl.innerHTML = `<div class="error-box">${esc(err.message || String(err))}</div>`;
+    buttons.forEach(button => button.disabled = false);
+  }
+}
+
+function renderAdminOperation(operation, resultEl, actionLabel) {
+  const status = operation.status || 'queued';
+  const badgeClass = status === 'completed' ? 'badge-completed' : (status === 'failed' ? 'badge-failed' : 'badge-processing');
+  const progress = operation.progress || {};
+  const summary = operation.summary || {};
+  const display = Object.keys(summary).length ? summary : progress;
+  const rows = Object.entries(display)
+    .filter(([key, value]) => typeof value !== 'object' && value !== null && value !== '')
+    .map(([key, value]) => `${key.replace(/_/g, ' ')}: ${esc(String(value))}`)
+    .join('; ');
+  const sample = operation.results || [];
+  const sampleHtml = sample.length
+    ? `<pre>${esc(JSON.stringify(sample, null, 2))}</pre>`
+    : '';
+  const truncated = operation.results_truncated
+    ? '<div class="meta">Results are sampled to keep operation status lightweight. Counts above are complete.</div>'
+    : '';
+  resultEl.innerHTML = `
+    <div>
+      <span class="badge ${badgeClass}">${esc(status)}</span>
+      ${esc(actionLabel)} operation ${esc(operation.id || '')}
+    </div>
+    <div class="meta">${esc(operation.message || '')}</div>
+    <div class="meta">${rows || 'Waiting for progress…'}</div>
+    ${truncated}
+    ${sampleHtml}`;
+}
+
 function esc(s) {
   const d = document.createElement('div');
   d.textContent = s;
@@ -222,10 +580,18 @@ function fmtDate(s) {
   if (!s) return '';
   try { return new Date(s).toLocaleString(); } catch { return s; }
 }
+function countStatus(items, status) {
+  return (items || []).filter(item => item.status === status).length;
+}
+function formatCount(n) {
+  return Number(n || 0).toLocaleString();
+}
 
 // --- Init ---
-loadJobs();
-refreshTimer = setInterval(loadJobs, 30000);
+loadDashboard();
+refreshTimer = setInterval(() => {
+  loadDashboard({ refreshSummary: Date.now() - lastSummaryRefresh >= SUMMARY_REFRESH_MS });
+}, JOB_REFRESH_MS);
 </script>
 </body>
 </html>

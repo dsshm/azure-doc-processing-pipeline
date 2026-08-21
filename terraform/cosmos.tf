@@ -10,7 +10,7 @@ resource "azurerm_cosmosdb_account" "main" {
   kind                          = "GlobalDocumentDB"
   local_authentication_disabled    = true
   public_network_access_enabled = true
-  ip_range_filter               = ["71.200.56.126"]
+  ip_range_filter               = distinct(concat(var.allowed_ip_addresses, var.cosmos_allowed_ip_addresses))
   tags                          = local.common_tags
 
   consistency_policy {
@@ -66,14 +66,38 @@ resource "azurerm_cosmosdb_sql_container" "results" {
   partition_key_paths = ["/jobId"]
 }
 
+resource "azurerm_cosmosdb_sql_container" "operations" {
+  name                = "operations"
+  resource_group_name = azurerm_resource_group.main.name
+  account_name        = azurerm_cosmosdb_account.main.name
+  database_name       = azurerm_cosmosdb_sql_database.main.name
+  partition_key_paths = ["/id"]
+
+  indexing_policy {
+    indexing_mode = "consistent"
+
+    included_path {
+      path = "/*"
+    }
+
+    excluded_path {
+      path = "/results/*"
+    }
+
+    excluded_path {
+      path = "/_etag/?"
+    }
+  }
+}
+
 # ---------------------------------------------------------------
-# Vector search policies for the results container.
+# Search policies for the results container.
 # azurerm doesn't support vector embedding policy / vector indexes,
 # so we overlay via azapi_update_resource.
 # ---------------------------------------------------------------
 
 resource "azapi_update_resource" "results_vector_policy" {
-  type      = "Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-05-15"
+  type      = "Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2025-10-15"
   name      = azurerm_cosmosdb_sql_container.results.name
   parent_id = "${azurerm_cosmosdb_account.main.id}/sqlDatabases/${azurerm_cosmosdb_sql_database.main.name}"
 
@@ -102,6 +126,15 @@ resource "azapi_update_resource" "results_vector_policy" {
             }
           ]
         }
+        fullTextPolicy = {
+          defaultLanguage = "en-US"
+          fullTextPaths = [
+            {
+              path     = "/search_text"
+              language = "en-US"
+            }
+          ]
+        }
         indexingPolicy = {
           indexingMode = "consistent"
           automatic    = true
@@ -124,6 +157,11 @@ resource "azapi_update_resource" "results_vector_policy" {
             {
               path = "/chunks/vector"
               type = "quantizedFlat"
+            }
+          ]
+          fullTextIndexes = [
+            {
+              path = "/search_text"
             }
           ]
         }

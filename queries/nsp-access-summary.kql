@@ -1,0 +1,51 @@
+let Lookback = 1d;
+union isfuzzy=true NSPAccessLogs, NspAccessLogs, AzureDiagnostics
+| where TimeGenerated >= ago(Lookback)
+| extend
+    SourceTable = tostring(Type),
+    ResourceProviderText = tostring(column_ifexists("ResourceProvider", "")),
+    CategoryText = tostring(column_ifexists("Category", "")),
+    ResourceIdText = tostring(column_ifexists("_ResourceId", column_ifexists("ResourceId", "")))
+| where SourceTable == "NspAccessLogs"
+    or CategoryText startswith "Nsp"
+    or ResourceProviderText =~ "MICROSOFT.NETWORK"
+    or ResourceIdText has "/networkSecurityPerimeters/"
+| extend
+    SourceDynamic = todynamic(column_ifexists("Source", dynamic({}))),
+    MatchedRuleDynamic = todynamic(column_ifexists("MatchedRule", dynamic({}))),
+    ServiceResourceIdText = tostring(column_ifexists("ServiceResourceId", column_ifexists("serviceResourceId_s", ""))),
+    ProfileText = tostring(column_ifexists("Profile", column_ifexists("profile_s", ""))),
+    OperationText = tostring(column_ifexists("OperationName", column_ifexists("operationName_s", ""))),
+    ResultDescriptionText = tostring(column_ifexists("ResultDescription", column_ifexists("resultDescription_s", ""))),
+    ResultTypeText = tostring(column_ifexists("ResultType", column_ifexists("resultType_s", ""))),
+    SourceIpColumn = tostring(column_ifexists("SourceIPAddress", column_ifexists("sourceIPAddress_s", column_ifexists("SourceIpAddress", column_ifexists("sourceIpAddress_s", ""))))),
+    SourceResourceColumn = tostring(column_ifexists("SourceResourceId", column_ifexists("sourceResourceId_s", ""))),
+    AccessRuleVersionText = tostring(column_ifexists("AccessRuleVersion", column_ifexists("accessRuleVersion_s", "")))
+| extend
+    SourceIp = iff(isnotempty(SourceIpColumn), SourceIpColumn, tostring(SourceDynamic.IpAddress)),
+    SourceResourceId = iff(isnotempty(SourceResourceColumn), SourceResourceColumn, tostring(SourceDynamic.ResourceId)),
+    MatchedRule = iff(isnotempty(tostring(MatchedRuleDynamic.AccessRule)), tostring(MatchedRuleDynamic.AccessRule), tostring(MatchedRuleDynamic.accessRule))
+| extend
+    Direction = case(CategoryText contains "Outbound", "Outbound", CategoryText contains "Inbound", "Inbound", "Unknown"),
+    Decision = case(CategoryText contains "Denied" or ResultTypeText has "Denied", "Denied", CategoryText contains "Allowed" or ResultTypeText has "Allowed", "Allowed", "Unknown"),
+    AccessPath = case(
+        CategoryText contains "ResourceRules", "Resource firewall/trusted access fallback",
+        CategoryText contains "PerimeterRules", "NSP perimeter rule",
+        CategoryText contains "IntraPerimeter", "Intra-perimeter",
+        CategoryText contains "CrossPerimeter", "Cross-perimeter",
+        CategoryText contains "Private", "Private endpoint",
+        CategoryText contains "OutboundAttempt", "Outbound attempt",
+        "Unknown")
+| extend CandidateSource = iff(isnotempty(SourceIp), SourceIp, iff(isnotempty(SourceResourceId), SourceResourceId, "unknown"))
+| summarize
+    Requests = count(),
+    FirstSeen = min(TimeGenerated),
+    LastSeen = max(TimeGenerated),
+    Profiles = make_set(ProfileText, 10),
+    MatchedRules = make_set(MatchedRule, 10),
+    Operations = make_set(OperationText, 10),
+    ResultDescriptions = make_set(ResultDescriptionText, 10),
+    ServiceResourceIds = make_set(ServiceResourceIdText, 20),
+    AccessRuleVersions = make_set(AccessRuleVersionText, 10)
+    by CandidateSource, SourceIp, SourceResourceId, Direction, Decision, AccessPath, CategoryText, SourceTable
+| order by LastSeen desc
